@@ -1,6 +1,6 @@
 /*
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
- * SPDX-License-Identifier: Apache-2.0.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 package software.amazon.smithy.rust.codegen.smithy.protocols
@@ -128,7 +128,7 @@ class AwsJsonSerializerGenerator(
     }
 }
 
-class AwsJson(
+open class AwsJson(
     private val codegenContext: CodegenContext,
     awsJsonVersion: AwsJsonVersion
 ) : Protocol {
@@ -183,6 +183,4 @@ class AwsJson(
         }
 }
 
-private fun awsJsonFieldName(member: MemberShape): String {
-    return member.memberName
-}
+fun awsJsonFieldName(member: MemberShape): String = member.memberName

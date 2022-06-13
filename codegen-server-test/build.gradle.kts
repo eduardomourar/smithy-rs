@@ -1,8 +1,9 @@
 /*
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
- * SPDX-License-Identifier: Apache-2.0.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
+description = "Generates Rust code from Smithy models and runs the protocol tests"
 extra["displayName"] = "Smithy :: Rust :: Codegen :: Server :: Test"
 extra["moduleName"] = "software.amazon.smithy.rust.kotlin.codegen.server.test"
 
@@ -36,13 +37,15 @@ val allCodegenTests = listOf(
     CodegenTest("com.amazonaws.simple#SimpleService", "simple"),
     CodegenTest("aws.protocoltests.restjson#RestJson", "rest_json"),
     CodegenTest("aws.protocoltests.restjson.validation#RestJsonValidation", "rest_json_validation"),
+    CodegenTest("aws.protocoltests.json10#JsonRpc10", "json_rpc10"),
+    CodegenTest("aws.protocoltests.json#JsonProtocol", "json_rpc11"),
     CodegenTest("aws.protocoltests.misc#MiscService", "misc"),
     CodegenTest("com.amazonaws.ebs#Ebs", "ebs"),
     CodegenTest("com.amazonaws.s3#AmazonS3", "s3"),
     CodegenTest("com.aws.example#PokemonService", "pokemon_service_sdk")
 )
 
-task("generateSmithyBuild") {
+tasks.register("generateSmithyBuild") {
     description = "generate smithy-build.json"
     doFirst {
         projectDir.resolve("smithy-build.json")
@@ -56,7 +59,7 @@ task("generateSmithyBuild") {
     }
 }
 
-task("generateCargoWorkspace") {
+tasks.register("generateCargoWorkspace") {
     description = "generate Cargo.toml workspace file"
     doFirst {
         buildDir.resolve("$workingDirUnderBuildDir/Cargo.toml")

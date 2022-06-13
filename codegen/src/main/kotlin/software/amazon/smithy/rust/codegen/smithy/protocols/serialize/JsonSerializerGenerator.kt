@@ -1,6 +1,6 @@
 /*
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
- * SPDX-License-Identifier: Apache-2.0.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 package software.amazon.smithy.rust.codegen.smithy.protocols.serialize
@@ -34,6 +34,8 @@ import software.amazon.smithy.rust.codegen.rustlang.withBlock
 import software.amazon.smithy.rust.codegen.smithy.CodegenContext
 import software.amazon.smithy.rust.codegen.smithy.RuntimeType
 import software.amazon.smithy.rust.codegen.smithy.RustSymbolProvider
+import software.amazon.smithy.rust.codegen.smithy.customize.NamedSectionGenerator
+import software.amazon.smithy.rust.codegen.smithy.customize.Section
 import software.amazon.smithy.rust.codegen.smithy.generators.UnionGenerator
 import software.amazon.smithy.rust.codegen.smithy.generators.renderUnknownVariant
 import software.amazon.smithy.rust.codegen.smithy.generators.serializationError
@@ -49,11 +51,25 @@ import software.amazon.smithy.rust.codegen.util.hasTrait
 import software.amazon.smithy.rust.codegen.util.inputShape
 import software.amazon.smithy.rust.codegen.util.outputShape
 
+/**
+ * Class describing a JSON section that can be used in a customization.
+ */
+sealed class JsonSection(name: String) : Section(name) {
+    /** Mutate the server error object prior to finalization. Eg: this can be used to inject `__type` to record the error type. */
+    data class ServerError(val structureShape: StructureShape, val jsonObject: String) : JsonSection("ServerError")
+}
+
+/**
+ * JSON customization.
+ */
+typealias JsonCustomization = NamedSectionGenerator<JsonSection>
+
 class JsonSerializerGenerator(
     codegenContext: CodegenContext,
     private val httpBindingResolver: HttpBindingResolver,
     /** Function that maps a MemberShape into a JSON field name */
     private val jsonName: (MemberShape) -> String,
+    private val customizations: List<JsonCustomization> = listOf(),
 ) : StructuredDataSerializerGenerator {
     private data class Context<T : Shape>(
         /** Expression that retrieves a JsonValueWriter from either a JsonObjectWriter or JsonArrayWriter */
@@ -131,7 +147,7 @@ class JsonSerializerGenerator(
 
     private val model = codegenContext.model
     private val symbolProvider = codegenContext.symbolProvider
-    private val mode = codegenContext.mode
+    private val target = codegenContext.target
     private val runtimeConfig = codegenContext.runtimeConfig
     private val smithyTypes = CargoDependency.SmithyTypes(runtimeConfig).asType()
     private val smithyJson = CargoDependency.smithyJson(runtimeConfig).asType()
@@ -155,7 +171,7 @@ class JsonSerializerGenerator(
     private fun serverStructureSerializer(
         fnName: String,
         structureShape: StructureShape,
-        includedMembers: List<MemberShape>
+        includedMembers: List<MemberShape>,
     ): RuntimeType {
         return RuntimeType.forInlineFun(fnName, operationSerModule) {
             it.rustBlockTemplate(
@@ -166,6 +182,7 @@ class JsonSerializerGenerator(
                 rust("let mut out = String::new();")
                 rustTemplate("let mut object = #{JsonObjectWriter}::new(&mut out);", *codegenScope)
                 serializeStructure(StructContext("object", "value", structureShape), includedMembers)
+                customizations.forEach { it.section(JsonSection.ServerError(structureShape, "object"))(this) }
                 rust("object.finish();")
                 rustTemplate("Ok(out)", *codegenScope)
             }
@@ -425,7 +442,7 @@ class JsonSerializerGenerator(
                             serializeMember(MemberContext.unionMember(context, "inner", member, jsonName))
                         }
                     }
-                    if (mode.renderUnknownVariant()) {
+                    if (target.renderUnknownVariant()) {
                         rustTemplate(
                             "#{Union}::${UnionGenerator.UnknownVariantName} => return Err(#{Error}::unknown_variant(${unionSymbol.name.dq()}))",
                             "Union" to unionSymbol,
