@@ -24,13 +24,14 @@ bytes = "1"
 fastrand = "1.4.0"
 http = "0.2.3"
 http-body = "0.4.4"
-hyper = { version = "0.14.12", features = ["client", "http2", "http1"], optional = true }
-hyper-rustls = { version = "0.22.1", optional = true, features = ["rustls-native-certs"] }
+hyper =  { git = "https://github.com/rjzak/hyper", branch = "wasi_wip", features = [ "client", "http2", "http1", "tcp" ], optional = true }
+# hyper = { version = "0.14.12", features = ["client", "http2", "http1"], optional = true }
+hyper-rustls = { version = "0.23.0", optional = true, features = ["rustls-native-certs"] }
 hyper-tls = { version = "0.5.0", optional = true }
 lazy_static = { version = "1", optional = true }
 pin-project-lite = "0.2.7"
 serde = { version = "1", features = ["derive"], optional = true }
-tokio = { version = "1.8.4" }
+tokio = { version = "1.21.1", features = ["rt", "macros", "io-util"] }
 tower = { version = "0.4.6", features = ["util", "retry"] }
 tracing = "0.1"
 
