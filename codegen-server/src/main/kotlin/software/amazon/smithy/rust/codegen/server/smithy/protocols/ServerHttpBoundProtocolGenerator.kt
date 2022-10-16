@@ -24,45 +24,43 @@ import software.amazon.smithy.model.traits.HttpErrorTrait
 import software.amazon.smithy.model.traits.HttpPayloadTrait
 import software.amazon.smithy.model.traits.HttpTrait
 import software.amazon.smithy.model.traits.MediaTypeTrait
-import software.amazon.smithy.rust.codegen.client.rustlang.Attribute
-import software.amazon.smithy.rust.codegen.client.rustlang.CargoDependency
-import software.amazon.smithy.rust.codegen.client.rustlang.RustModule
-import software.amazon.smithy.rust.codegen.client.rustlang.RustType
-import software.amazon.smithy.rust.codegen.client.rustlang.RustWriter
-import software.amazon.smithy.rust.codegen.client.rustlang.Writable
-import software.amazon.smithy.rust.codegen.client.rustlang.asType
-import software.amazon.smithy.rust.codegen.client.rustlang.conditionalBlock
-import software.amazon.smithy.rust.codegen.client.rustlang.render
-import software.amazon.smithy.rust.codegen.client.rustlang.rust
-import software.amazon.smithy.rust.codegen.client.rustlang.rustBlock
-import software.amazon.smithy.rust.codegen.client.rustlang.rustBlockTemplate
-import software.amazon.smithy.rust.codegen.client.rustlang.rustTemplate
-import software.amazon.smithy.rust.codegen.client.rustlang.withBlock
-import software.amazon.smithy.rust.codegen.client.rustlang.withBlockTemplate
-import software.amazon.smithy.rust.codegen.client.rustlang.writable
-import software.amazon.smithy.rust.codegen.client.smithy.RuntimeType
-import software.amazon.smithy.rust.codegen.client.smithy.ServerCodegenContext
-import software.amazon.smithy.rust.codegen.client.smithy.customize.OperationCustomization
-import software.amazon.smithy.rust.codegen.client.smithy.extractSymbolFromOption
-import software.amazon.smithy.rust.codegen.client.smithy.generators.CodegenTarget
-import software.amazon.smithy.rust.codegen.client.smithy.generators.StructureGenerator
-import software.amazon.smithy.rust.codegen.client.smithy.generators.TypeConversionGenerator
-import software.amazon.smithy.rust.codegen.client.smithy.generators.builderSymbol
-import software.amazon.smithy.rust.codegen.client.smithy.generators.error.errorSymbol
-import software.amazon.smithy.rust.codegen.client.smithy.generators.http.HttpMessageType
-import software.amazon.smithy.rust.codegen.client.smithy.generators.protocol.MakeOperationGenerator
-import software.amazon.smithy.rust.codegen.client.smithy.generators.protocol.ProtocolGenerator
-import software.amazon.smithy.rust.codegen.client.smithy.generators.protocol.ProtocolTraitImplGenerator
-import software.amazon.smithy.rust.codegen.client.smithy.generators.setterName
-import software.amazon.smithy.rust.codegen.client.smithy.isOptional
-import software.amazon.smithy.rust.codegen.client.smithy.protocols.HttpBindingDescriptor
-import software.amazon.smithy.rust.codegen.client.smithy.protocols.HttpBoundProtocolPayloadGenerator
-import software.amazon.smithy.rust.codegen.client.smithy.protocols.HttpLocation
-import software.amazon.smithy.rust.codegen.client.smithy.protocols.parse.StructuredDataParserGenerator
-import software.amazon.smithy.rust.codegen.client.smithy.toOptional
-import software.amazon.smithy.rust.codegen.client.smithy.transformers.operationErrors
-import software.amazon.smithy.rust.codegen.client.smithy.wrapOptional
+import software.amazon.smithy.rust.codegen.core.rustlang.Attribute
+import software.amazon.smithy.rust.codegen.core.rustlang.CargoDependency
+import software.amazon.smithy.rust.codegen.core.rustlang.RustModule
+import software.amazon.smithy.rust.codegen.core.rustlang.RustType
+import software.amazon.smithy.rust.codegen.core.rustlang.RustWriter
+import software.amazon.smithy.rust.codegen.core.rustlang.Writable
+import software.amazon.smithy.rust.codegen.core.rustlang.asType
+import software.amazon.smithy.rust.codegen.core.rustlang.conditionalBlock
+import software.amazon.smithy.rust.codegen.core.rustlang.render
+import software.amazon.smithy.rust.codegen.core.rustlang.rust
+import software.amazon.smithy.rust.codegen.core.rustlang.rustBlock
+import software.amazon.smithy.rust.codegen.core.rustlang.rustBlockTemplate
+import software.amazon.smithy.rust.codegen.core.rustlang.rustTemplate
+import software.amazon.smithy.rust.codegen.core.rustlang.withBlock
+import software.amazon.smithy.rust.codegen.core.rustlang.withBlockTemplate
+import software.amazon.smithy.rust.codegen.core.rustlang.writable
+import software.amazon.smithy.rust.codegen.core.smithy.CodegenTarget
+import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType
+import software.amazon.smithy.rust.codegen.core.smithy.customize.OperationCustomization
+import software.amazon.smithy.rust.codegen.core.smithy.extractSymbolFromOption
+import software.amazon.smithy.rust.codegen.core.smithy.generators.StructureGenerator
+import software.amazon.smithy.rust.codegen.core.smithy.generators.TypeConversionGenerator
+import software.amazon.smithy.rust.codegen.core.smithy.generators.builderSymbol
+import software.amazon.smithy.rust.codegen.core.smithy.generators.error.errorSymbol
+import software.amazon.smithy.rust.codegen.core.smithy.generators.http.HttpMessageType
+import software.amazon.smithy.rust.codegen.core.smithy.generators.protocol.MakeOperationGenerator
+import software.amazon.smithy.rust.codegen.core.smithy.generators.protocol.ProtocolTraitImplGenerator
+import software.amazon.smithy.rust.codegen.core.smithy.generators.setterName
+import software.amazon.smithy.rust.codegen.core.smithy.isOptional
+import software.amazon.smithy.rust.codegen.core.smithy.protocols.HttpBindingDescriptor
+import software.amazon.smithy.rust.codegen.core.smithy.protocols.HttpBoundProtocolPayloadGenerator
+import software.amazon.smithy.rust.codegen.core.smithy.protocols.HttpLocation
+import software.amazon.smithy.rust.codegen.core.smithy.protocols.parse.StructuredDataParserGenerator
+import software.amazon.smithy.rust.codegen.core.smithy.toOptional
 import software.amazon.smithy.rust.codegen.core.smithy.traits.SyntheticInputTrait
+import software.amazon.smithy.rust.codegen.core.smithy.transformers.operationErrors
+import software.amazon.smithy.rust.codegen.core.smithy.wrapOptional
 import software.amazon.smithy.rust.codegen.core.util.dq
 import software.amazon.smithy.rust.codegen.core.util.expectTrait
 import software.amazon.smithy.rust.codegen.core.util.findStreamingMember
@@ -72,16 +70,17 @@ import software.amazon.smithy.rust.codegen.core.util.hasTrait
 import software.amazon.smithy.rust.codegen.core.util.inputShape
 import software.amazon.smithy.rust.codegen.core.util.isStreaming
 import software.amazon.smithy.rust.codegen.core.util.outputShape
-import software.amazon.smithy.rust.codegen.core.util.toPascalCase
 import software.amazon.smithy.rust.codegen.core.util.toSnakeCase
 import software.amazon.smithy.rust.codegen.server.smithy.ServerCargoDependency
+import software.amazon.smithy.rust.codegen.server.smithy.ServerCodegenContext
 import software.amazon.smithy.rust.codegen.server.smithy.ServerRuntimeType
 import software.amazon.smithy.rust.codegen.server.smithy.generators.http.ServerRequestBindingGenerator
 import software.amazon.smithy.rust.codegen.server.smithy.generators.http.ServerResponseBindingGenerator
 import software.amazon.smithy.rust.codegen.server.smithy.generators.protocol.ServerProtocol
+import software.amazon.smithy.rust.codegen.server.smithy.generators.protocol.ServerProtocolGenerator
 import java.util.logging.Logger
 
-/*
+/**
  * Implement operations' input parsing and output serialization. Protocols can plug their own implementations
  * and overrides by creating a protocol factory inheriting from this class and feeding it to the [ServerProtocolLoader].
  * See `ServerRestJsonFactory.kt` for more info.
@@ -89,7 +88,7 @@ import java.util.logging.Logger
 class ServerHttpBoundProtocolGenerator(
     codegenContext: ServerCodegenContext,
     protocol: ServerProtocol,
-) : ProtocolGenerator(
+) : ServerProtocolGenerator(
     codegenContext,
     protocol,
     MakeOperationGenerator(
@@ -177,10 +176,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
                 rustTemplate(
                     """
                     if ! #{SmithyHttpServer}::protocols::accept_header_classifier(req, ${contentType.dq()}) {
-                        return Err(#{RuntimeError} {
-                            protocol: #{SmithyHttpServer}::protocols::Protocol::${codegenContext.protocol.name.toPascalCase()},
-                            kind: #{SmithyHttpServer}::runtime_error::RuntimeErrorKind::NotAcceptable,
-                        })
+                        return Err(#{RuntimeError}::NotAcceptable)
                     }
                     """,
                     *codegenScope,
@@ -200,10 +196,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
                         rustTemplate(
                             """
                             if #{SmithyHttpServer}::protocols::content_type_header_classifier(req, $expectedRequestContentType).is_err() {
-                                return Err(#{RuntimeError} {
-                                    protocol: #{SmithyHttpServer}::protocols::Protocol::${codegenContext.protocol.name.toPascalCase()},
-                                    kind: #{SmithyHttpServer}::runtime_error::RuntimeErrorKind::UnsupportedMediaType,
-                                })
+                                return Err(#{RuntimeError}::UnsupportedMediaType)
                             }
                             """,
                             *codegenScope,
@@ -230,12 +223,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
                     #{parse_request}(req)
                         .await
                         .map($inputName)
-                        .map_err(
-                            |err| #{RuntimeError} {
-                                protocol: #{SmithyHttpServer}::protocols::Protocol::${codegenContext.protocol.name.toPascalCase()},
-                                kind: err.into()
-                            }
-                        )
+                        .map_err(Into::into)
                 }
             }
 
@@ -282,12 +270,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
                     Self::Output(o) => {
                         match #{serialize_response}(o) {
                             Ok(response) => response,
-                            Err(e) => {
-                                #{RuntimeError} {
-                                    protocol: #{SmithyHttpServer}::protocols::Protocol::${codegenContext.protocol.name.toPascalCase()},
-                                    kind: e.into()
-                                }.into_response()
-                            }
+                            Err(e) => #{SmithyHttpServer}::response::IntoResponse::<#{Marker}>::into_response(#{RuntimeError}::from(e))
                         }
                     },
                     Self::Error(err) => {
@@ -296,12 +279,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
                                 response.extensions_mut().insert(#{SmithyHttpServer}::extension::ModeledErrorExtension::new(err.name()));
                                 response
                             },
-                            Err(e) => {
-                                #{RuntimeError} {
-                                    protocol: #{SmithyHttpServer}::protocols::Protocol::${codegenContext.protocol.name.toPascalCase()},
-                                    kind: e.into()
-                                }.into_response()
-                            }
+                            Err(e) => #{SmithyHttpServer}::response::IntoResponse::<#{Marker}>::into_response(#{RuntimeError}::from(e))
                         }
                     }
                 }
@@ -346,12 +324,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
                 """
                 match #{serialize_response}(self.0) {
                     Ok(response) => response,
-                    Err(e) => {
-                        #{RuntimeError} {
-                            protocol: #{SmithyHttpServer}::protocols::Protocol::${codegenContext.protocol.name.toPascalCase()},
-                            kind: e.into()
-                        }.into_response()
-                    }
+                    Err(e) => #{SmithyHttpServer}::response::IntoResponse::<#{Marker}>::into_response(#{RuntimeError}::from(e))
                 }
                 """.trimIndent()
 
@@ -535,7 +508,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
 
                     val bindings = httpBindingResolver.errorResponseBindings(it)
 
-                    Attribute.AllowUnusedMut.render(this)
+                    software.amazon.smithy.rust.codegen.core.rustlang.Attribute.AllowUnusedMut.render(this)
                     rustTemplate("let mut builder = #{http}::Response::builder();", *codegenScope)
                     serverRenderResponseHeaders(operationShape, variantShape)
 
@@ -571,7 +544,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
         operationShape: OperationShape,
         bindings: List<HttpBindingDescriptor>,
     ) {
-        Attribute.AllowUnusedMut.render(this)
+        software.amazon.smithy.rust.codegen.core.rustlang.Attribute.AllowUnusedMut.render(this)
         rustTemplate("let mut builder = #{http}::Response::builder();", *codegenScope)
         serverRenderResponseHeaders(operationShape)
         bindings.find { it.location == HttpLocation.RESPONSE_CODE }
@@ -738,7 +711,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
     ) {
         val httpBindingGenerator = ServerRequestBindingGenerator(protocol, codegenContext, operationShape)
         val structuredDataParser = protocol.structuredDataParser(operationShape)
-        Attribute.AllowUnusedMut.render(this)
+        software.amazon.smithy.rust.codegen.core.rustlang.Attribute.AllowUnusedMut.render(this)
         rust("let mut input = #T::default();", inputShape.builderSymbol(symbolProvider))
         val parser = structuredDataParser.serverInputParser(operationShape)
         val noInputs = model.expectShape(operationShape.inputShape).expectTrait<SyntheticInputTrait>().originalId == null
@@ -992,7 +965,7 @@ private class ServerHttpBoundProtocolTraitImplGenerator(
                 rustTemplate(
                     "let mut query_params: #{HashMap}<String, " +
                         "${queryParamsBinding.queryParamsBindingTargetMapValueType().asRustType().render()}> = #{HashMap}::new();",
-                    "HashMap" to RustType.HashMap.RuntimeType,
+                    "HashMap" to software.amazon.smithy.rust.codegen.core.rustlang.RustType.HashMap.RuntimeType,
                 )
             }
             val (queryBindingsTargettingCollection, queryBindingsTargettingSimple) =
