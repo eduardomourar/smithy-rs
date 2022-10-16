@@ -12,6 +12,7 @@ repository = "https://github.com/awslabs/smithy-rs"
 
 [features]
 rt-tokio = ["tokio/rt", "tokio/fs", "tokio/io-util", "tokio-util/io"]
+byte-stream = ["tokio/fs"]
 event-stream = ["aws-smithy-eventstream"]
 
 [dependencies]
@@ -31,7 +32,7 @@ hyper = "0.14.12"
 
 # ByteStream internals
 futures-core = "0.3.14"
-tokio = { version = "1.21.1", features = ["rt", "macros", "io-util"], optional = true }
+tokio = { version = "1.21", features = ["rt", "macros", "io-util"], optional = true }
 tokio-util = { version = "0.7", optional = true }
 
 [dev-dependencies]

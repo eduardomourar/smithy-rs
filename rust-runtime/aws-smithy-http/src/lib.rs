@@ -34,6 +34,7 @@ pub mod retry;
 #[cfg(feature = "event-stream")]
 pub mod event_stream;
 
+#[cfg(feature = "byte-stream")]
 pub mod byte_stream;
 
 mod pin_util;
