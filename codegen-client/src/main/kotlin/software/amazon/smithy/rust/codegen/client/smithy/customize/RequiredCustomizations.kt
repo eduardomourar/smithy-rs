@@ -61,6 +61,7 @@ class RequiredCustomizations : RustCodegenDecorator<ClientProtocolGenerator, Cli
     override fun extras(codegenContext: ClientCodegenContext, rustCrate: RustCrate) {
         // Add rt-tokio feature for `ByteStream::from_path`
         rustCrate.mergeFeature(Feature("rt-tokio", true, listOf("aws-smithy-http/rt-tokio")))
+        rustCrate.mergeFeature(Feature("byte-stream", true, listOf("aws-smithy-http/byte-stream")))
 
         // Re-export resiliency types
         ResiliencyReExportCustomization(codegenContext.runtimeConfig).extras(rustCrate)

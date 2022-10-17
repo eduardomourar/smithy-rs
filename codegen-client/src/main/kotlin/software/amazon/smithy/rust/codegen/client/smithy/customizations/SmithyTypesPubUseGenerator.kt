@@ -9,6 +9,7 @@ import software.amazon.smithy.model.Model
 import software.amazon.smithy.model.shapes.StructureShape
 import software.amazon.smithy.rust.codegen.core.rustlang.CargoDependency
 import software.amazon.smithy.rust.codegen.core.rustlang.asType
+import software.amazon.smithy.rust.codegen.core.rustlang.Attribute
 import software.amazon.smithy.rust.codegen.core.rustlang.docs
 import software.amazon.smithy.rust.codegen.core.rustlang.rust
 import software.amazon.smithy.rust.codegen.core.rustlang.rustBlock
@@ -78,7 +79,12 @@ class SmithyTypesPubUseGenerator(private val runtimeConfig: RuntimeConfig) : Lib
                     if (types.isNotEmpty()) {
                         docs("Re-exported types from supporting crates.")
                         rustBlock("pub mod types") {
-                            types.forEach { type -> rust("pub use #T;", type) }
+                            types.forEach { type ->
+                                if (type.fullyQualifiedName().contains("::byte_stream::")) {
+                                    Attribute.Cfg.feature("byte-stream").render(this)
+                                }
+                                rust("pub use #T;", type)
+                            }
                         }
                     }
                 }
