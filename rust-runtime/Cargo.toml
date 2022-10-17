@@ -17,3 +17,7 @@ members = [
     "aws-smithy-http-server",
     "aws-smithy-http-server-python",
 ]
+
+[patch.crates-io]
+hyper = { git = "https://github.com/rjzak/hyper", branch = "wasi_wip" }
+ring = { git = "https://github.com/john-sharratt/ring", branch = "main" }
