@@ -38,8 +38,8 @@ class FluentClientDecorator : ClientCodegenDecorator {
             codegenContext,
             customizations = listOf(GenericFluentClient(codegenContext)),
         ).render(rustCrate)
+
         rustCrate.mergeFeature(Feature("rustls", default = true, listOf("aws-smithy-client/rustls")))
-        rustCrate.mergeFeature(Feature("native-tls", default = false, listOf("aws-smithy-client/native-tls")))
     }
 
     override fun libRsCustomizations(

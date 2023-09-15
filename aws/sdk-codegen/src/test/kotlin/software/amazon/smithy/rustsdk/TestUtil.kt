@@ -6,6 +6,7 @@
 package software.amazon.smithy.rustsdk
 
 import software.amazon.smithy.model.Model
+import software.amazon.smithy.model.node.BooleanNode
 import software.amazon.smithy.model.node.ObjectNode
 import software.amazon.smithy.rust.codegen.client.smithy.ClientCodegenContext
 import software.amazon.smithy.rust.codegen.client.smithy.ClientRustSettings
@@ -42,6 +43,7 @@ fun awsSdkIntegrationTest(
     clientIntegrationTest(
         model,
         IntegrationTestParams(
+            cargoCommand = "cargo test --features test-util",
             runtimeConfig = AwsTestRuntimeConfig,
             additionalSettings = ObjectNode.builder().withMember(
                 "customizationConfig",
@@ -58,6 +60,7 @@ fun awsSdkIntegrationTest(
                     "codegen",
                     ObjectNode.builder()
                         .withMember("includeFluentClient", false)
+                        .withMember("includeEndpointUrlConfig", BooleanNode.from(false))
                         .build(),
                 ).build(),
         ),

@@ -52,6 +52,10 @@ check-aws-sdk-smoketest-unit-tests: generate-aws-sdk-smoketest
 check-aws-sdk-standalone-integration-tests: generate-aws-sdk-smoketest
 	$(CI_ACTION) $@ $(ARGS)
 
+.PHONY: check-book
+check-book: check-rust-runtimes
+	$(CI_ACTION) $@ $(ARGS)
+
 .PHONY: check-client-codegen-integration-tests
 check-client-codegen-integration-tests:
 	$(CI_ACTION) $@ $(ARGS)
@@ -120,6 +124,14 @@ generate-codegen-diff:
 check-deterministic-codegen:
 	$(CI_ACTION) $@ $(ARGS)
 
+.PHONY: check-semver
+check-semver:
+	$(CI_ACTION) $@ $(ARGS)
+
 .PHONY: generate-smithy-rs-release
 generate-smithy-rs-release:
+	$(CI_ACTION) $@ $(ARGS)
+
+.PHONY: verify-tls-config
+verify-tls-config:
 	$(CI_ACTION) $@ $(ARGS)

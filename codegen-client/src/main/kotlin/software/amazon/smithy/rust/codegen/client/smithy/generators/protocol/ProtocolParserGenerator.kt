@@ -10,6 +10,8 @@ import software.amazon.smithy.model.shapes.OperationShape
 import software.amazon.smithy.model.shapes.StructureShape
 import software.amazon.smithy.model.traits.ErrorTrait
 import software.amazon.smithy.rust.codegen.client.smithy.ClientCodegenContext
+import software.amazon.smithy.rust.codegen.client.smithy.generators.OperationCustomization
+import software.amazon.smithy.rust.codegen.client.smithy.generators.OperationSection
 import software.amazon.smithy.rust.codegen.client.smithy.generators.http.ResponseBindingGenerator
 import software.amazon.smithy.rust.codegen.core.rustlang.Attribute
 import software.amazon.smithy.rust.codegen.core.rustlang.RustWriter
@@ -23,8 +25,6 @@ import software.amazon.smithy.rust.codegen.core.rustlang.withBlock
 import software.amazon.smithy.rust.codegen.core.rustlang.writable
 import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType
 import software.amazon.smithy.rust.codegen.core.smithy.RustSymbolProvider
-import software.amazon.smithy.rust.codegen.core.smithy.customize.OperationCustomization
-import software.amazon.smithy.rust.codegen.core.smithy.customize.OperationSection
 import software.amazon.smithy.rust.codegen.core.smithy.customize.writeCustomizations
 import software.amazon.smithy.rust.codegen.core.smithy.generators.BuilderGenerator
 import software.amazon.smithy.rust.codegen.core.smithy.generators.setterName
@@ -55,11 +55,12 @@ class ProtocolParserGenerator(
         "operation" to RuntimeType.operationModule(codegenContext.runtimeConfig),
         "Bytes" to RuntimeType.Bytes,
         "SdkBody" to RuntimeType.sdkBody(codegenContext.runtimeConfig),
-        // TODO(enableNewSmithyRuntime): Remove the `PropertyBag` below
-        "PropertyBag" to RuntimeType.smithyHttp(codegenContext.runtimeConfig).resolve("property_bag::PropertyBag"),
     )
 
-    fun parseResponseFn(operationShape: OperationShape, customizations: List<OperationCustomization>): RuntimeType {
+    fun parseResponseFn(
+        operationShape: OperationShape,
+        customizations: List<OperationCustomization>,
+    ): RuntimeType {
         val outputShape = operationShape.outputShape(model)
         val outputSymbol = symbolProvider.toSymbol(outputShape)
         val errorSymbol = symbolProvider.symbolForOperationError(operationShape)
@@ -84,7 +85,10 @@ class ProtocolParserGenerator(
         }
     }
 
-    fun parseErrorFn(operationShape: OperationShape, customizations: List<OperationCustomization>): RuntimeType {
+    fun parseErrorFn(
+        operationShape: OperationShape,
+        customizations: List<OperationCustomization>,
+    ): RuntimeType {
         val outputShape = operationShape.outputShape(model)
         val outputSymbol = symbolProvider.toSymbol(outputShape)
         val errorSymbol = symbolProvider.symbolForOperationError(operationShape)
@@ -178,24 +182,15 @@ class ProtocolParserGenerator(
 
     fun parseStreamingResponseFn(
         operationShape: OperationShape,
-        // TODO(enableNewSmithyRuntime): Remove the `includeProperties` flag as if it were always set to `false`
-        includeProperties: Boolean,
         customizations: List<OperationCustomization>,
     ): RuntimeType {
         val outputShape = operationShape.outputShape(model)
         val outputSymbol = symbolProvider.toSymbol(outputShape)
         val errorSymbol = symbolProvider.symbolForOperationError(operationShape)
-        val fnNameSuffix = if (includeProperties) "http_response_with_props" else "http_response"
-        return protocolFunctions.deserializeFn(operationShape, fnNameSuffix = fnNameSuffix) { fnName ->
+        return protocolFunctions.deserializeFn(operationShape, fnNameSuffix = "http_response") { fnName ->
             Attribute.AllowClippyUnnecessaryWraps.render(this)
-            val propertiesArg = if (includeProperties) {
-                Attribute.AllowUnusedVariables.render(this)
-                ", properties: &#{PropertyBag}"
-            } else {
-                ""
-            }
             rustBlockTemplate(
-                "pub fn $fnName(response: &mut #{http}::Response<#{SdkBody}>$propertiesArg) -> std::result::Result<#{O}, #{E}>",
+                "pub fn $fnName(response: &mut #{http}::Response<#{SdkBody}>) -> std::result::Result<#{O}, #{E}>",
                 *codegenScope,
                 "O" to outputSymbol,
                 "E" to errorSymbol,
@@ -232,7 +227,7 @@ class ProtocolParserGenerator(
         customizations: List<OperationCustomization>,
     ) {
         val httpBindingGenerator = ResponseBindingGenerator(protocol, codegenContext, operationShape)
-        val structuredDataParser = protocol.structuredDataParser(operationShape)
+        val structuredDataParser = protocol.structuredDataParser()
         Attribute.AllowUnusedMut.render(this)
         rust("let mut output = #T::default();", symbolProvider.symbolForBuilder(outputShape))
         if (outputShape.id == operationShape.output.get()) {

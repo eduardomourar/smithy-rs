@@ -5,7 +5,6 @@
 
 import aws.sdk.AwsServices
 import aws.sdk.Membership
-import aws.sdk.RootTest
 import aws.sdk.discoverServices
 import aws.sdk.docsLandingPage
 import aws.sdk.parseMembership
@@ -21,6 +20,7 @@ plugins {
 
 configure<software.amazon.smithy.gradle.SmithyExtension> {
     smithyBuildConfigs = files(buildDir.resolve("smithy-build.json"))
+    allowUnknownTraits = true
 }
 
 val smithyVersion: String by project
@@ -99,11 +99,11 @@ fun generateSmithyBuild(services: AwsServices): String {
                         },
                         "codegen": {
                             "includeFluentClient": false,
+                            "includeEndpointUrlConfig": false,
                             "renameErrors": false,
                             "debugMode": $debugMode,
                             "eventStreamAllowList": [$eventStreamAllowListMembers],
-                            "enableNewCrateOrganizationScheme": true,
-                            "enableNewSmithyRuntime": false
+                            "enableUserConfigurableRuntimePlugins": false
                         },
                         "service": "${service.service}",
                         "module": "$moduleName",
@@ -151,6 +151,8 @@ tasks.register("generateSmithyBuild") {
 }
 
 tasks.register("generateIndexMd") {
+    dependsOn("smithyBuildJar")
+
     inputs.property("servicelist", awsServices.services.toString())
     val indexMd = outputDir.resolve("index.md")
     outputs.file(indexMd)
@@ -161,6 +163,8 @@ tasks.register("generateIndexMd") {
 
 tasks.register("relocateServices") {
     description = "relocate AWS services to their final destination"
+    dependsOn("smithyBuildJar")
+
     doLast {
         awsServices.services.forEach {
             logger.info("Relocating ${it.module}...")
@@ -186,6 +190,8 @@ tasks.register("relocateServices") {
 
 tasks.register("relocateExamples") {
     description = "relocate the examples folder & rewrite path dependencies"
+    dependsOn("smithyBuildJar")
+
     doLast {
         if (awsServices.examples.isNotEmpty()) {
             copy {
@@ -195,6 +201,7 @@ tasks.register("relocateExamples") {
                 }
                 into(outputDir)
                 exclude("**/target")
+                exclude("**/rust-toolchain.toml")
                 filter { line -> line.replace("build/aws-sdk/sdk/", "sdk/") }
             }
         }
@@ -207,6 +214,8 @@ tasks.register("relocateExamples") {
 
 tasks.register("relocateTests") {
     description = "relocate the root integration tests and rewrite path dependencies"
+    dependsOn("smithyBuildJar")
+
     doLast {
         if (awsServices.rootTests.isNotEmpty()) {
             copy {
@@ -230,13 +239,13 @@ tasks.register("relocateTests") {
 tasks.register<ExecRustBuildTool>("fixExampleManifests") {
     description = "Adds dependency path and corrects version number of examples after relocation"
     enabled = awsServices.examples.isNotEmpty()
+    dependsOn("relocateExamples")
 
     toolPath = sdkVersionerToolPath
     binaryName = "sdk-versioner"
     arguments = listOf(
         "use-path-and-version-dependencies",
-        "--isolate-crates",
-        "--sdk-path", "../../sdk",
+        "--sdk-path", sdkOutputDir.absolutePath,
         "--versions-toml", outputDir.resolve("versions.toml").absolutePath,
         outputDir.resolve("examples").absolutePath,
     )
@@ -257,6 +266,7 @@ fun rewritePathDependency(line: String): String {
 }
 
 tasks.register<Copy>("copyAllRuntimes") {
+    dependsOn("smithyBuildJar")
     from("$rootDir/aws/rust-runtime") {
         CrateSet.AWS_SDK_RUNTIME.forEach { include("$it/**") }
     }
@@ -293,6 +303,7 @@ tasks.register("relocateRuntime") {
 }
 
 tasks.register<Copy>("relocateChangelog") {
+    dependsOn("smithyBuildJar")
     from("$rootDir/aws")
     include("SDK_CHANGELOG.md")
     into(outputDir)
@@ -302,9 +313,9 @@ tasks.register<Copy>("relocateChangelog") {
 fun generateCargoWorkspace(services: AwsServices): String {
     return """
     |[workspace]
-    |exclude = [${"\n"}${services.rootTests.map(RootTest::manifestName).joinToString(",\n") { "|    \"$it\"" }}
+    |exclude = [${"\n"}${services.excludedFromWorkspace().joinToString(",\n") { "|    \"$it\"" }}
     |]
-    |members = [${"\n"}${services.allModules.joinToString(",\n") { "|    \"$it\"" }}
+    |members = [${"\n"}${services.includedInWorkspace().joinToString(",\n") { "|    \"$it\"" }}
     |]
     """.trimMargin()
 }
@@ -314,6 +325,7 @@ tasks.register("generateCargoWorkspace") {
     doFirst {
         outputDir.mkdirs()
         outputDir.resolve("Cargo.toml").writeText(generateCargoWorkspace(awsServices))
+        rootProject.rootDir.resolve("clippy-root.toml").copyTo(outputDir.resolve("clippy.toml"), overwrite = true)
     }
     inputs.property("servicelist", awsServices.moduleNames.toString())
     if (awsServices.examples.isNotEmpty()) {
@@ -323,11 +335,17 @@ tasks.register("generateCargoWorkspace") {
         inputs.dir(test.path)
     }
     outputs.file(outputDir.resolve("Cargo.toml"))
+    outputs.file(outputDir.resolve("clippy.toml"))
     outputs.upToDateWhen { false }
 }
 
 tasks.register<ExecRustBuildTool>("fixManifests") {
     description = "Run the publisher tool's `fix-manifests` sub-command on the generated services"
+    dependsOn("relocateServices")
+    dependsOn("relocateRuntime")
+    dependsOn("relocateAwsRuntime")
+    dependsOn("relocateExamples")
+    dependsOn("relocateTests")
 
     inputs.dir(publisherToolPath)
     outputs.dir(outputDir)
@@ -339,18 +357,10 @@ tasks.register<ExecRustBuildTool>("fixManifests") {
             add("--disable-version-number-validation")
         }
     }
-
-    dependsOn("assemble")
-    dependsOn("relocateServices")
-    dependsOn("relocateRuntime")
-    dependsOn("relocateAwsRuntime")
-    dependsOn("relocateExamples")
-    dependsOn("relocateTests")
 }
 
 tasks.register<ExecRustBuildTool>("hydrateReadme") {
     description = "Run the publisher tool's `hydrate-readme` sub-command to create the final AWS Rust SDK README file"
-
     dependsOn("generateVersionManifest")
 
     inputs.dir(publisherToolPath)
@@ -385,7 +395,9 @@ tasks.register<ExecRustBuildTool>("generateVersionManifest") {
     binaryName = "publisher"
     arguments = mutableListOf(
         "generate-version-manifest",
-        "--location",
+        "--input-location",
+        sdkOutputDir.absolutePath,
+        "--output-location",
         outputDir.absolutePath,
         "--smithy-build",
         buildDir.resolve("smithy-build.json").normalize().absolutePath,
@@ -399,10 +411,17 @@ tasks.register<ExecRustBuildTool>("generateVersionManifest") {
     }
 }
 
-tasks.register("finalizeSdk") {
-    dependsOn("assemble")
+tasks["smithyBuildJar"].apply {
+    inputs.file(buildDir.resolve("smithy-build.json"))
+    inputs.dir(projectDir.resolve("aws-models"))
+    dependsOn("generateSmithyBuild")
+    dependsOn("generateCargoWorkspace")
     outputs.upToDateWhen { false }
-    finalizedBy(
+}
+tasks["assemble"].apply {
+    dependsOn(
+        "deleteSdk",
+        "smithyBuildJar",
         "relocateServices",
         "relocateRuntime",
         "relocateAwsRuntime",
@@ -415,28 +434,22 @@ tasks.register("finalizeSdk") {
         "hydrateReadme",
         "relocateChangelog",
     )
-}
-
-tasks["smithyBuildJar"].apply {
-    inputs.file(buildDir.resolve("smithy-build.json"))
-    inputs.dir(projectDir.resolve("aws-models"))
-    dependsOn("generateSmithyBuild")
-    dependsOn("generateCargoWorkspace")
     outputs.upToDateWhen { false }
-}
-tasks["assemble"].apply {
-    dependsOn("deleteSdk")
-    dependsOn("smithyBuildJar")
-    finalizedBy("finalizeSdk")
 }
 
 project.registerCargoCommandsTasks(outputDir, defaultRustDocFlags)
 project.registerGenerateCargoConfigTomlTask(outputDir)
 
+tasks["test"].dependsOn("assemble")
 tasks["test"].finalizedBy(Cargo.CLIPPY.toString, Cargo.TEST.toString, Cargo.DOCS.toString)
 
 tasks.register<Delete>("deleteSdk") {
-    delete = setOf(outputDir)
+    delete(
+        fileTree(outputDir) {
+            // Delete files but keep directories so that terminals don't get messed up in local development
+            include("**/*.*")
+        },
+    )
 }
 tasks["clean"].dependsOn("deleteSdk")
 tasks["clean"].doFirst {

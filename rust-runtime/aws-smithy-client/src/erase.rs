@@ -164,6 +164,14 @@ impl DynConnector {
     {
         Self(BoxCloneService::new(connector.map_err(|e| e.into())))
     }
+
+    #[doc(hidden)]
+    pub fn call_lite(
+        &mut self,
+        req: http::Request<SdkBody>,
+    ) -> BoxFuture<http::Response<SdkBody>, ConnectorError> {
+        Service::call(self, req)
+    }
 }
 
 impl Service<http::Request<SdkBody>> for DynConnector {

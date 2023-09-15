@@ -5,19 +5,19 @@
 
 use aws_config::SdkConfig;
 use aws_credential_types::provider::SharedCredentialsProvider;
-use aws_http::user_agent::AwsUserAgent;
 use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::Client;
 use aws_smithy_client::test_connection::capture_request;
 
-use std::convert::Infallible;
 use std::time::{Duration, UNIX_EPOCH};
 
 #[tokio::test]
 async fn test_s3_ops_are_customizable() {
     let (conn, rcvr) = capture_request(None);
     let sdk_config = SdkConfig::builder()
-        .credentials_provider(SharedCredentialsProvider::new(Credentials::for_tests()))
+        .credentials_provider(SharedCredentialsProvider::new(
+            Credentials::for_tests_with_session_token(),
+        ))
         .region(Region::new("us-east-1"))
         .http_connector(conn.clone())
         .build();
@@ -29,14 +29,8 @@ async fn test_s3_ops_are_customizable() {
         .customize()
         .await
         .expect("list_buckets is customizable")
-        .map_operation(|mut op| {
-            op.properties_mut()
-                .insert(UNIX_EPOCH + Duration::from_secs(1624036048));
-            op.properties_mut().insert(AwsUserAgent::for_tests());
-
-            Result::<_, Infallible>::Ok(op)
-        })
-        .expect("inserting into the property bag is infallible");
+        .request_time_for_tests(UNIX_EPOCH + Duration::from_secs(1624036048))
+        .user_agent_for_tests();
 
     // The response from the fake connection won't return the expected XML but we don't care about
     // that error in this test

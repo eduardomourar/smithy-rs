@@ -45,8 +45,7 @@ val allCodegenTests = listOf(
         extraConfig = """
             ,
             "codegen": {
-                "includeFluentClient": false,
-                "enableNewCrateOrganizationScheme": true
+                "includeFluentClient": false
             },
             "customizationConfig": {
                 "awsSdk": {
@@ -62,8 +61,7 @@ val allCodegenTests = listOf(
         extraConfig = """
             ,
             "codegen": {
-                "includeFluentClient": false,
-                "enableNewCrateOrganizationScheme": true
+                "includeFluentClient": false
             },
             "customizationConfig": {
                 "awsSdk": {
