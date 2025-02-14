@@ -36,6 +36,7 @@ import software.amazon.smithy.rust.codegen.core.rustlang.withBlockTemplate
 import software.amazon.smithy.rust.codegen.core.smithy.CodegenContext
 import software.amazon.smithy.rust.codegen.core.smithy.CodegenTarget
 import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType
+import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType.Companion.preludeScope
 import software.amazon.smithy.rust.codegen.core.smithy.canUseDefault
 import software.amazon.smithy.rust.codegen.core.smithy.customize.NamedCustomization
 import software.amazon.smithy.rust.codegen.core.smithy.customize.Section
@@ -59,21 +60,29 @@ import software.amazon.smithy.utils.StringUtils
  * Class describing a JSON parser section that can be used in a customization.
  */
 sealed class JsonParserSection(name: String) : Section(name) {
-    data class BeforeBoxingDeserializedMember(val shape: MemberShape) : JsonParserSection("BeforeBoxingDeserializedMember")
+    data class BeforeBoxingDeserializedMember(val shape: MemberShape) :
+        JsonParserSection("BeforeBoxingDeserializedMember")
 
-    data class AfterTimestampDeserializedMember(val shape: MemberShape) : JsonParserSection("AfterTimestampDeserializedMember")
+    data class AfterTimestampDeserializedMember(val shape: MemberShape) :
+        JsonParserSection("AfterTimestampDeserializedMember")
 
     data class AfterBlobDeserializedMember(val shape: MemberShape) : JsonParserSection("AfterBlobDeserializedMember")
 
-    data class AfterDocumentDeserializedMember(val shape: MemberShape) : JsonParserSection("AfterDocumentDeserializedMember")
+    data class AfterDocumentDeserializedMember(val shape: MemberShape) :
+        JsonParserSection("AfterDocumentDeserializedMember")
+
+    /**
+     * Represents a customization point at the beginning of union deserialization, before any token
+     * processing occurs.
+     */
+    data class BeforeUnionDeserialize(val shape: UnionShape) :
+        JsonParserSection("BeforeUnionDeserialize")
 }
 
 /**
  * Customization for the JSON parser.
  */
 typealias JsonParserCustomization = NamedCustomization<JsonParserSection>
-
-data class ReturnSymbolToParse(val symbol: Symbol, val isUnconstrained: Boolean)
 
 class JsonParserGenerator(
     private val codegenContext: CodegenContext,
@@ -100,23 +109,26 @@ class JsonParserGenerator(
     private val codegenTarget = codegenContext.target
     private val smithyJson = CargoDependency.smithyJson(runtimeConfig).toType()
     private val protocolFunctions = ProtocolFunctions(codegenContext)
-    private val codegenScope = arrayOf(
-        "Error" to smithyJson.resolve("deserialize::error::DeserializeError"),
-        "expect_blob_or_null" to smithyJson.resolve("deserialize::token::expect_blob_or_null"),
-        "expect_bool_or_null" to smithyJson.resolve("deserialize::token::expect_bool_or_null"),
-        "expect_document" to smithyJson.resolve("deserialize::token::expect_document"),
-        "expect_number_or_null" to smithyJson.resolve("deserialize::token::expect_number_or_null"),
-        "expect_start_array" to smithyJson.resolve("deserialize::token::expect_start_array"),
-        "expect_start_object" to smithyJson.resolve("deserialize::token::expect_start_object"),
-        "expect_string_or_null" to smithyJson.resolve("deserialize::token::expect_string_or_null"),
-        "expect_timestamp_or_null" to smithyJson.resolve("deserialize::token::expect_timestamp_or_null"),
-        "json_token_iter" to smithyJson.resolve("deserialize::json_token_iter"),
-        "Peekable" to RuntimeType.std.resolve("iter::Peekable"),
-        "skip_value" to smithyJson.resolve("deserialize::token::skip_value"),
-        "skip_to_end" to smithyJson.resolve("deserialize::token::skip_to_end"),
-        "Token" to smithyJson.resolve("deserialize::Token"),
-        "or_empty" to orEmptyJson(),
-    )
+    private val builderInstantiator = codegenContext.builderInstantiator()
+    private val codegenScope =
+        arrayOf(
+            "Error" to smithyJson.resolve("deserialize::error::DeserializeError"),
+            "expect_blob_or_null" to smithyJson.resolve("deserialize::token::expect_blob_or_null"),
+            "expect_bool_or_null" to smithyJson.resolve("deserialize::token::expect_bool_or_null"),
+            "expect_document" to smithyJson.resolve("deserialize::token::expect_document"),
+            "expect_number_or_null" to smithyJson.resolve("deserialize::token::expect_number_or_null"),
+            "expect_start_array" to smithyJson.resolve("deserialize::token::expect_start_array"),
+            "expect_start_object" to smithyJson.resolve("deserialize::token::expect_start_object"),
+            "expect_string_or_null" to smithyJson.resolve("deserialize::token::expect_string_or_null"),
+            "expect_timestamp_or_null" to smithyJson.resolve("deserialize::token::expect_timestamp_or_null"),
+            "json_token_iter" to smithyJson.resolve("deserialize::json_token_iter"),
+            "Peekable" to RuntimeType.std.resolve("iter::Peekable"),
+            "skip_value" to smithyJson.resolve("deserialize::token::skip_value"),
+            "skip_to_end" to smithyJson.resolve("deserialize::token::skip_to_end"),
+            "Token" to smithyJson.resolve("deserialize::Token"),
+            "or_empty" to orEmptyJson(),
+            *preludeScope,
+        )
 
     /**
      * Reusable structure parser implementation that can be used to generate parsing code for
@@ -164,11 +176,12 @@ class JsonParserGenerator(
                 *codegenScope,
                 "ReturnType" to returnSymbolToParse.symbol,
             ) {
-                val input = if (shape is DocumentShape) {
-                    "input"
-                } else {
-                    "#{or_empty}(input)"
-                }
+                val input =
+                    if (shape is DocumentShape) {
+                        "input"
+                    } else {
+                        "#{or_empty}(input)"
+                    }
 
                 rustTemplate(
                     """
@@ -208,19 +221,20 @@ class JsonParserGenerator(
         )
     }
 
-    private fun orEmptyJson(): RuntimeType = ProtocolFunctions.crossOperationFn("or_empty_doc") {
-        rust(
-            """
-            pub(crate) fn or_empty_doc(data: &[u8]) -> &[u8] {
-                if data.is_empty() {
-                    b"{}"
-                } else {
-                    data
+    private fun orEmptyJson(): RuntimeType =
+        ProtocolFunctions.crossOperationFn("or_empty_doc") {
+            rust(
+                """
+                pub(crate) fn or_empty_doc(data: &[u8]) -> &[u8] {
+                    if data.is_empty() {
+                        b"{}"
+                    } else {
+                        data
+                    }
                 }
-            }
-            """,
-        )
-    }
+                """,
+            )
+        }
 
     override fun serverInputParser(operationShape: OperationShape): RuntimeType? {
         val includedMembers = httpBindingResolver.requestMembers(operationShape, HttpLocation.DOCUMENT)
@@ -251,6 +265,7 @@ class JsonParserGenerator(
                                     deserializeMember(member)
                                 }
                             }
+
                             CodegenTarget.SERVER -> {
                                 if (symbolProvider.toSymbol(member).isOptional()) {
                                     withBlock("builder = builder.${member.setterName()}(", ");") {
@@ -282,7 +297,7 @@ class JsonParserGenerator(
             is BooleanShape -> rustTemplate("#{expect_bool_or_null}(tokens.next())?", *codegenScope)
             is NumberShape -> deserializeNumber(target)
             is BlobShape -> deserializeBlob(memberShape)
-            is TimestampShape -> deserializeTimestamp(target, memberShape)
+            is TimestampShape -> deserializeTimestamp(memberShape)
             is CollectionShape -> deserializeCollection(target)
             is MapShape -> deserializeMap(target)
             is StructureShape -> deserializeStruct(target)
@@ -316,7 +331,10 @@ class JsonParserGenerator(
         }
     }
 
-    private fun RustWriter.deserializeStringInner(target: StringShape, escapedStrName: String) {
+    private fun RustWriter.deserializeStringInner(
+        target: StringShape,
+        escapedStrName: String,
+    ) {
         withBlock("$escapedStrName.to_unescaped().map(|u|", ")") {
             when (target.hasTrait<EnumTrait>()) {
                 true -> {
@@ -326,8 +344,7 @@ class JsonParserGenerator(
                         rust("#T::from(u.as_ref())", symbolProvider.toSymbol(target))
                     }
                 }
-
-                else -> rust("u.into_owned()")
+                false -> rust("u.into_owned()")
             }
         }
     }
@@ -356,7 +373,7 @@ class JsonParserGenerator(
         }
     }
 
-    private fun RustWriter.deserializeTimestamp(shape: TimestampShape, member: MemberShape) {
+    private fun RustWriter.deserializeTimestamp(member: MemberShape) {
         val timestampFormat =
             httpBindingResolver.timestampFormat(
                 member, HttpLocation.DOCUMENT,
@@ -375,235 +392,277 @@ class JsonParserGenerator(
     private fun RustWriter.deserializeCollection(shape: CollectionShape) {
         val isSparse = shape.hasTrait<SparseTrait>()
         val (returnSymbol, returnUnconstrainedType) = returnSymbolToParse(shape)
-        val parser = protocolFunctions.deserializeFn(shape) { fnName ->
-            rustBlockTemplate(
-                """
-                pub(crate) fn $fnName<'a, I>(tokens: &mut #{Peekable}<I>) -> Result<Option<#{ReturnType}>, #{Error}>
-                    where I: Iterator<Item = Result<#{Token}<'a>, #{Error}>>
-                """,
-                "ReturnType" to returnSymbol,
-                *codegenScope,
-            ) {
-                startArrayOrNull {
-                    rust("let mut items = Vec::new();")
-                    rustBlock("loop") {
-                        rustBlock("match tokens.peek()") {
-                            rustBlockTemplate("Some(Ok(#{Token}::EndArray { .. })) =>", *codegenScope) {
-                                rust("tokens.next().transpose().unwrap(); break;")
-                            }
-                            rustBlock("_ => ") {
-                                if (isSparse) {
-                                    withBlock("items.push(", ");") {
-                                        deserializeMember(shape.member)
-                                    }
-                                } else {
-                                    withBlock("let value =", ";") {
-                                        deserializeMember(shape.member)
-                                    }
-                                    rust(
-                                        """
-                                        if let Some(value) = value {
-                                            items.push(value);
+        val parser =
+            protocolFunctions.deserializeFn(shape) { fnName ->
+                rustBlockTemplate(
+                    """
+                    pub(crate) fn $fnName<'a, I>(tokens: &mut #{Peekable}<I>) -> Result<Option<#{ReturnType}>, #{Error}>
+                        where I: Iterator<Item = Result<#{Token}<'a>, #{Error}>>
+                    """,
+                    "ReturnType" to returnSymbol,
+                    *codegenScope,
+                ) {
+                    startArrayOrNull {
+                        rust("let mut items = Vec::new();")
+                        rustBlock("loop") {
+                            rustBlock("match tokens.peek()") {
+                                rustBlockTemplate("Some(Ok(#{Token}::EndArray { .. })) =>", *codegenScope) {
+                                    rust("tokens.next().transpose().unwrap(); break;")
+                                }
+                                rustBlock("_ => ") {
+                                    if (isSparse) {
+                                        withBlock("items.push(", ");") {
+                                            deserializeMember(shape.member)
                                         }
-                                        """,
-                                    )
-                                    codegenTarget.ifServer {
-                                        rustTemplate(
+                                    } else {
+                                        withBlock("let value =", ";") {
+                                            deserializeMember(shape.member)
+                                        }
+                                        rust(
                                             """
-                                            else {
-                                                return Err(#{Error}::custom("dense list cannot contain null values"));
+                                            if let Some(value) = value {
+                                                items.push(value);
                                             }
                                             """,
-                                            *codegenScope,
                                         )
+                                        codegenTarget.ifServer {
+                                            rustTemplate(
+                                                """
+                                                else {
+                                                    return Err(#{Error}::custom("dense list cannot contain null values"));
+                                                }
+                                                """,
+                                                *codegenScope,
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    if (returnUnconstrainedType) {
-                        rust("Ok(Some(#{T}(items)))", returnSymbol)
-                    } else {
-                        rust("Ok(Some(items))")
+                        if (returnUnconstrainedType) {
+                            rust("Ok(Some(#{T}(items)))", returnSymbol)
+                        } else {
+                            rust("Ok(Some(items))")
+                        }
                     }
                 }
             }
-        }
         rust("#T(tokens)?", parser)
     }
 
     private fun RustWriter.deserializeMap(shape: MapShape) {
-        val keyTarget = model.expectShape(shape.key.target) as StringShape
+        val keyTarget = model.expectShape(shape.key.target, StringShape::class.java)
         val isSparse = shape.hasTrait<SparseTrait>()
         val returnSymbolToParse = returnSymbolToParse(shape)
-        val parser = protocolFunctions.deserializeFn(shape) { fnName ->
-            rustBlockTemplate(
-                """
-                pub(crate) fn $fnName<'a, I>(tokens: &mut #{Peekable}<I>) -> Result<Option<#{ReturnType}>, #{Error}>
-                    where I: Iterator<Item = Result<#{Token}<'a>, #{Error}>>
-                """,
-                "ReturnType" to returnSymbolToParse.symbol,
-                *codegenScope,
-            ) {
-                startObjectOrNull {
-                    rust("let mut map = #T::new();", RuntimeType.HashMap)
-                    objectKeyLoop(hasMembers = true) {
-                        withBlock("let key =", "?;") {
-                            deserializeStringInner(keyTarget, "key")
-                        }
-                        withBlock("let value =", ";") {
-                            deserializeMember(shape.value)
-                        }
-                        if (isSparse) {
-                            rust("map.insert(key, value);")
-                        } else {
-                            codegenTarget.ifServer {
-                                rustTemplate(
-                                    """
-                                    match value {
-                                        Some(value) => { map.insert(key, value); }
-                                        None => return Err(#{Error}::custom("dense map cannot contain null values"))
+        val parser =
+            protocolFunctions.deserializeFn(shape) { fnName ->
+                rustBlockTemplate(
+                    """
+                    pub(crate) fn $fnName<'a, I>(tokens: &mut #{Peekable}<I>) -> Result<Option<#{ReturnType}>, #{Error}>
+                        where I: Iterator<Item = Result<#{Token}<'a>, #{Error}>>
+                    """,
+                    "ReturnType" to returnSymbolToParse.symbol,
+                    *codegenScope,
+                ) {
+                    startObjectOrNull {
+                        rust("let mut map = #T::new();", RuntimeType.HashMap)
+                        objectKeyLoop(hasMembers = true) {
+                            withBlock("let key =", "?;") {
+                                deserializeStringInner(keyTarget, "key")
+                            }
+                            withBlock("let value =", ";") {
+                                deserializeMember(shape.value)
+                            }
+                            if (isSparse) {
+                                rust("map.insert(key, value);")
+                            } else {
+                                codegenTarget.ifServer {
+                                    rustTemplate(
+                                        """
+                                        match value {
+                                            Some(value) => { map.insert(key, value); }
+                                            None => return Err(#{Error}::custom("dense map cannot contain null values"))
                                             }""",
-                                    *codegenScope,
-                                )
-                            }
-                            codegenTarget.ifClient {
-                                rustTemplate(
-                                    """
-                                    if let Some(value) = value {
-                                        map.insert(key, value);
-                                    }
-                                    """,
-                                )
+                                        *codegenScope,
+                                    )
+                                }
+                                codegenTarget.ifClient {
+                                    rustTemplate(
+                                        """
+                                        if let Some(value) = value {
+                                            map.insert(key, value);
+                                        }
+                                        """,
+                                    )
+                                }
                             }
                         }
-                    }
-                    if (returnSymbolToParse.isUnconstrained) {
-                        rust("Ok(Some(#{T}(map)))", returnSymbolToParse.symbol)
-                    } else {
-                        rust("Ok(Some(map))")
+                        if (returnSymbolToParse.isUnconstrained) {
+                            rust("Ok(Some(#{T}(map)))", returnSymbolToParse.symbol)
+                        } else {
+                            rust("Ok(Some(map))")
+                        }
                     }
                 }
             }
-        }
         rust("#T(tokens)?", parser)
     }
 
     private fun RustWriter.deserializeStruct(shape: StructureShape) {
         val returnSymbolToParse = returnSymbolToParse(shape)
-        val nestedParser = protocolFunctions.deserializeFn(shape) { fnName ->
-            rustBlockTemplate(
-                """
-                pub(crate) fn $fnName<'a, I>(tokens: &mut #{Peekable}<I>) -> Result<Option<#{ReturnType}>, #{Error}>
-                    where I: Iterator<Item = Result<#{Token}<'a>, #{Error}>>
-                """,
-                "ReturnType" to returnSymbolToParse.symbol,
-                *codegenScope,
-            ) {
-                startObjectOrNull {
-                    Attribute.AllowUnusedMut.render(this)
-                    rustTemplate(
-                        "let mut builder = #{Builder}::default();",
-                        *codegenScope,
-                        "Builder" to symbolProvider.symbolForBuilder(shape),
-                    )
-                    deserializeStructInner(shape.members())
-                    // Only call `build()` if the builder is not fallible. Otherwise, return the builder.
-                    if (returnSymbolToParse.isUnconstrained) {
-                        rust("Ok(Some(builder))")
-                    } else {
-                        rust("Ok(Some(builder.build()))")
+        val nestedParser =
+            protocolFunctions.deserializeFn(shape) { fnName ->
+                rustBlockTemplate(
+                    """
+                    pub(crate) fn $fnName<'a, I>(tokens: &mut #{Peekable}<I>) -> Result<Option<#{ReturnType}>, #{Error}>
+                        where I: Iterator<Item = Result<#{Token}<'a>, #{Error}>>
+                    """,
+                    "ReturnType" to returnSymbolToParse.symbol,
+                    *codegenScope,
+                ) {
+                    startObjectOrNull {
+                        Attribute.AllowUnusedMut.render(this)
+                        rustTemplate(
+                            "let mut builder = #{Builder}::default();",
+                            *codegenScope,
+                            "Builder" to symbolProvider.symbolForBuilder(shape),
+                        )
+                        deserializeStructInner(shape.members())
+                        val builder =
+                            builderInstantiator.finalizeBuilder(
+                                "builder", shape,
+                            ) {
+                                rustTemplate(
+                                    """|err|#{Error}::custom_source("Response was invalid", err)""", *codegenScope,
+                                )
+                            }
+                        rust("Ok(Some(#T))", builder)
                     }
                 }
             }
-        }
         rust("#T(tokens)?", nestedParser)
     }
 
     private fun RustWriter.deserializeUnion(shape: UnionShape) {
         val returnSymbolToParse = returnSymbolToParse(shape)
-        val nestedParser = protocolFunctions.deserializeFn(shape) { fnName ->
-            rustBlockTemplate(
-                """
-                pub(crate) fn $fnName<'a, I>(tokens: &mut #{Peekable}<I>) -> Result<Option<#{Shape}>, #{Error}>
-                    where I: Iterator<Item = Result<#{Token}<'a>, #{Error}>>
-                """,
-                *codegenScope,
-                "Shape" to returnSymbolToParse.symbol,
-            ) {
-                rust("let mut variant = None;")
-                val checkValueSet = !shape.members().all { it.isTargetUnit() } && !codegenTarget.renderUnknownVariant()
-                rustBlock("match tokens.next().transpose()?") {
-                    rustBlockTemplate(
-                        """
-                        Some(#{Token}::ValueNull { .. }) => return Ok(None),
-                        Some(#{Token}::StartObject { .. }) =>
-                        """,
-                        *codegenScope,
-                    ) {
-                        objectKeyLoop(hasMembers = shape.members().isNotEmpty()) {
-                            rustTemplate(
-                                """
-                                if variant.is_some() {
-                                    return Err(#{Error}::custom("encountered mixed variants in union"));
-                                }
-                                """,
-                                *codegenScope,
-                            )
-                            withBlock("variant = match key.to_unescaped()?.as_ref() {", "};") {
-                                for (member in shape.members()) {
-                                    val variantName = symbolProvider.toMemberName(member)
-                                    rustBlock("${jsonName(member).dq()} =>") {
-                                        if (member.isTargetUnit()) {
-                                            rustTemplate(
-                                                """
-                                                #{skip_value}(tokens)?;
-                                                Some(#{Union}::$variantName)
-                                                """,
-                                                "Union" to returnSymbolToParse.symbol, *codegenScope,
-                                            )
-                                        } else {
-                                            withBlock("Some(#T::$variantName(", "))", returnSymbolToParse.symbol) {
-                                                deserializeMember(member)
-                                                unwrapOrDefaultOrError(member, checkValueSet)
+        val nestedParser =
+            protocolFunctions.deserializeFn(shape) { fnName ->
+                rustBlockTemplate(
+                    """
+                    pub(crate) fn $fnName<'a, I>(tokens: &mut #{Peekable}<I>) -> Result<Option<#{Shape}>, #{Error}>
+                        where I: Iterator<Item = Result<#{Token}<'a>, #{Error}>>
+                    """,
+                    *codegenScope,
+                    "Shape" to returnSymbolToParse.symbol,
+                ) {
+                    // Apply any custom union deserialization logic before processing tokens.
+                    // This allows for customization of how union variants are handled,
+                    // particularly their discrimination mechanism.
+                    for (customization in customizations) {
+                        customization.section(JsonParserSection.BeforeUnionDeserialize(shape))(this)
+                    }
+                    rust("let mut variant = None;")
+                    val checkValueSet = !shape.members().all { it.isTargetUnit() } && !codegenTarget.renderUnknownVariant()
+                    rustBlock("match tokens.next().transpose()?") {
+                        rustBlockTemplate(
+                            """
+                            Some(#{Token}::ValueNull { .. }) => return Ok(None),
+                            Some(#{Token}::StartObject { .. }) =>
+                            """,
+                            *codegenScope,
+                        ) {
+                            objectKeyLoop(hasMembers = shape.members().isNotEmpty()) {
+                                rustTemplate(
+                                    """
+                                    if let #{Some}(#{Ok}(#{Token}::ValueNull { .. })) = tokens.peek() {
+                                        let _ = tokens.next().expect("peek returned a token")?;
+                                        continue;
+                                    }
+                                    """,
+                                    *codegenScope,
+                                )
+                                rustTemplate(
+                                    """
+                                    let key = key.to_unescaped()?;
+                                    if key == "__type" {
+                                        #{skip_value}(tokens)?;
+                                        continue
+                                    }
+                                    if variant.is_some() {
+                                        return Err(#{Error}::custom("encountered mixed variants in union"));
+                                    }
+                                    """,
+                                    *codegenScope,
+                                )
+                                withBlock("variant = match key.as_ref() {", "};") {
+                                    for (member in shape.members()) {
+                                        val variantName = symbolProvider.toMemberName(member)
+                                        rustBlock("${jsonName(member).dq()} =>") {
+                                            if (member.isTargetUnit()) {
+                                                rustTemplate(
+                                                    """
+                                                    #{skip_value}(tokens)?;
+                                                    Some(#{Union}::$variantName)
+                                                    """,
+                                                    "Union" to returnSymbolToParse.symbol, *codegenScope,
+                                                )
+                                            } else {
+                                                withBlock("Some(#T::$variantName(", "))", returnSymbolToParse.symbol) {
+                                                    deserializeMember(member)
+                                                    unwrapOrDefaultOrError(member, checkValueSet)
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                when (codegenTarget.renderUnknownVariant()) {
-                                    // In client mode, resolve an unknown union variant to the unknown variant.
-                                    true -> rustTemplate(
-                                        """
-                                        _ => {
-                                          #{skip_value}(tokens)?;
-                                          Some(#{Union}::${UnionGenerator.UnknownVariantName})
-                                        }
-                                        """,
-                                        "Union" to returnSymbolToParse.symbol,
-                                        *codegenScope,
-                                    )
-                                    // In server mode, use strict parsing.
-                                    // Consultation: https://github.com/awslabs/smithy/issues/1222
-                                    false -> rustTemplate(
-                                        """variant => return Err(#{Error}::custom(format!("unexpected union variant: {}", variant)))""",
-                                        *codegenScope,
-                                    )
+                                    when (codegenTarget.renderUnknownVariant()) {
+                                        // In client mode, resolve an unknown union variant to the unknown variant.
+                                        true ->
+                                            rustTemplate(
+                                                """
+                                                _ => {
+                                                  #{skip_value}(tokens)?;
+                                                  Some(#{Union}::${UnionGenerator.UNKNOWN_VARIANT_NAME})
+                                                }
+                                                """,
+                                                "Union" to returnSymbolToParse.symbol,
+                                                *codegenScope,
+                                            )
+                                        // In server mode, use strict parsing.
+                                        // Consultation: https://github.com/awslabs/smithy/issues/1222
+                                        false ->
+                                            rustTemplate(
+                                                """variant => return Err(#{Error}::custom(format!("unexpected union variant: {}", variant)))""",
+                                                *codegenScope,
+                                            )
+                                    }
                                 }
                             }
                         }
+                        rustTemplate(
+                            """_ => return Err(#{Error}::custom("expected start object or null"))""",
+                            *codegenScope,
+                        )
                     }
+                    // If we've gotten to the point where the union had a `{ ... }` section, we can't return None
+                    // anymore. If we didn't parse a union at this point, this is an error.
                     rustTemplate(
-                        """_ => return Err(#{Error}::custom("expected start object or null"))""",
+                        """
+                        if variant.is_none() {
+                            return Err(#{Error}::custom("Union did not contain a valid variant."))
+                        }
+                        """,
                         *codegenScope,
                     )
+                    rust("Ok(variant)")
                 }
-                rust("Ok(variant)")
             }
-        }
         rust("#T(tokens)?", nestedParser)
     }
 
-    private fun RustWriter.unwrapOrDefaultOrError(member: MemberShape, checkValueSet: Boolean) {
+    private fun RustWriter.unwrapOrDefaultOrError(
+        member: MemberShape,
+        checkValueSet: Boolean,
+    ) {
         if (symbolProvider.toSymbol(member).canUseDefault() && !checkValueSet) {
             rust(".unwrap_or_default()")
         } else {
@@ -614,7 +673,10 @@ class JsonParserGenerator(
         }
     }
 
-    private fun RustWriter.objectKeyLoop(hasMembers: Boolean, inner: Writable) {
+    private fun RustWriter.objectKeyLoop(
+        hasMembers: Boolean,
+        inner: Writable,
+    ) {
         if (!hasMembers) {
             rustTemplate("#{skip_to_end}(tokens)?;", *codegenScope)
         } else {
@@ -639,8 +701,13 @@ class JsonParserGenerator(
     }
 
     private fun RustWriter.startArrayOrNull(inner: Writable) = startOrNull("array", inner)
+
     private fun RustWriter.startObjectOrNull(inner: Writable) = startOrNull("object", inner)
-    private fun RustWriter.startOrNull(objectOrArray: String, inner: Writable) {
+
+    private fun RustWriter.startOrNull(
+        objectOrArray: String,
+        inner: Writable,
+    ) {
         rustBlockTemplate("match tokens.next().transpose()?", *codegenScope) {
             rustBlockTemplate(
                 """

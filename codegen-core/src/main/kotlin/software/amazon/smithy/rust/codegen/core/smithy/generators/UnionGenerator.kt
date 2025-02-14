@@ -34,10 +34,11 @@ import software.amazon.smithy.rust.codegen.core.util.isTargetUnit
 import software.amazon.smithy.rust.codegen.core.util.shouldRedact
 import software.amazon.smithy.rust.codegen.core.util.toSnakeCase
 
-fun CodegenTarget.renderUnknownVariant() = when (this) {
-    CodegenTarget.SERVER -> false
-    CodegenTarget.CLIENT -> true
-}
+fun CodegenTarget.renderUnknownVariant() =
+    when (this) {
+        CodegenTarget.SERVER -> false
+        CodegenTarget.CLIENT -> true
+    }
 
 /**
  * Generate an `enum` for a Smithy Union Shape
@@ -109,7 +110,6 @@ open class UnionGenerator(
     private fun renderImplBlock(unionSymbol: Symbol) {
         writer.rustBlock("impl ${unionSymbol.name}") {
             sortedMembers.forEach { member ->
-                val memberSymbol = symbolProvider.toSymbol(member)
                 val funcNamePart = member.memberName.toSnakeCase()
                 val variantName = symbolProvider.toMemberName(member)
 
@@ -161,7 +161,7 @@ open class UnionGenerator(
                         }
                     }
                     if (renderUnknownVariant) {
-                        rust("${unionSymbol.name}::$UnknownVariantName => f.debug_tuple(${UnknownVariantName.dq()}).finish(),")
+                        rust("${unionSymbol.name}::$UNKNOWN_VARIANT_NAME => f.debug_tuple(${UNKNOWN_VARIANT_NAME.dq()}).finish(),")
                     }
                 }
             }
@@ -169,16 +169,20 @@ open class UnionGenerator(
     }
 
     companion object {
-        const val UnknownVariantName = "Unknown"
+        const val UNKNOWN_VARIANT_NAME = "Unknown"
     }
 }
 
 fun unknownVariantError(union: String) =
-    "Cannot serialize `$union::${UnionGenerator.UnknownVariantName}` for the request. " +
+    "Cannot serialize `$union::${UnionGenerator.UNKNOWN_VARIANT_NAME}` for the request. " +
         "The `Unknown` variant is intended for responses only. " +
         "It occurs when an outdated client is used after a new enum variant was added on the server side."
 
-private fun RustWriter.renderVariant(symbolProvider: SymbolProvider, member: MemberShape, memberSymbol: Symbol) {
+private fun RustWriter.renderVariant(
+    symbolProvider: SymbolProvider,
+    member: MemberShape,
+    memberSymbol: Symbol,
+) {
     if (member.isTargetUnit()) {
         write("${symbolProvider.toMemberName(member)},")
     } else {
@@ -196,7 +200,8 @@ private fun RustWriter.renderAsVariant(
 ) {
     if (member.isTargetUnit()) {
         rust(
-            "/// Tries to convert the enum instance into [`$variantName`], extracting the inner `()`.",
+            "/// Tries to convert the enum instance into [`$variantName`](#T::$variantName), extracting the inner `()`.",
+            unionSymbol,
         )
         rust("/// Returns `Err(&Self)` if it can't be converted.")
         rustBlockTemplate("pub fn as_$funcNamePart(&self) -> #{Result}<(), &Self>", *preludeScope) {

@@ -7,7 +7,7 @@
 
 use aws_smithy_runtime_api::box_error::BoxError;
 use aws_smithy_runtime_api::client::interceptors::context::BeforeTransmitInterceptorContextMut;
-use aws_smithy_runtime_api::client::interceptors::Interceptor;
+use aws_smithy_runtime_api::client::interceptors::Intercept;
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
 use aws_smithy_types::config_bag::ConfigBag;
 use http::header::ACCEPT;
@@ -15,9 +15,11 @@ use http::HeaderValue;
 
 /// Interceptor that adds an Accept header to API Gateway requests.
 #[derive(Debug, Default)]
-pub(crate) struct AcceptHeaderInterceptor;
+pub(crate) struct AcceptHeaderInterceptor {
+    _priv: (),
+}
 
-impl Interceptor for AcceptHeaderInterceptor {
+impl Intercept for AcceptHeaderInterceptor {
     fn name(&self) -> &'static str {
         "AcceptHeaderInterceptor"
     }

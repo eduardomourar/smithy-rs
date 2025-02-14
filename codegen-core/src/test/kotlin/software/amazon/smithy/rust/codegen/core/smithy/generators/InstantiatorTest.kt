@@ -6,11 +6,12 @@
 package software.amazon.smithy.rust.codegen.core.smithy.generators
 
 import org.junit.jupiter.api.Test
-import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.model.node.Node
 import software.amazon.smithy.model.node.NumberNode
 import software.amazon.smithy.model.node.StringNode
 import software.amazon.smithy.model.shapes.BlobShape
+import software.amazon.smithy.model.shapes.DoubleShape
+import software.amazon.smithy.model.shapes.FloatShape
 import software.amazon.smithy.model.shapes.MemberShape
 import software.amazon.smithy.model.shapes.ShapeId
 import software.amazon.smithy.model.shapes.StructureShape
@@ -19,7 +20,6 @@ import software.amazon.smithy.model.shapes.UnionShape
 import software.amazon.smithy.rust.codegen.core.rustlang.rust
 import software.amazon.smithy.rust.codegen.core.rustlang.rustTemplate
 import software.amazon.smithy.rust.codegen.core.rustlang.withBlock
-import software.amazon.smithy.rust.codegen.core.rustlang.writable
 import software.amazon.smithy.rust.codegen.core.smithy.CodegenContext
 import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType
 import software.amazon.smithy.rust.codegen.core.smithy.transformers.RecursiveShapeBoxer
@@ -34,7 +34,8 @@ import software.amazon.smithy.rust.codegen.core.util.dq
 import software.amazon.smithy.rust.codegen.core.util.lookup
 
 class InstantiatorTest {
-    private val model = """
+    private val model =
+        """
         namespace com.test
 
         @documentation("this documents the shape")
@@ -86,7 +87,9 @@ class InstantiatorTest {
             @required
             num: Integer
         }
-    """.asSmithyModel().let { RecursiveShapeBoxer().transform(it) }
+        """.asSmithyModel().let {
+            RecursiveShapeBoxer().transform(it)
+        }
 
     private val codegenContext = testCodegenContext(model)
     private val symbolProvider = codegenContext.symbolProvider
@@ -102,14 +105,11 @@ class InstantiatorTest {
         override fun doesSetterTakeInOption(memberShape: MemberShape) = true
     }
 
-    // This can be empty since the actual behavior is tested in `ClientInstantiatorTest` and `ServerInstantiatorTest`.
-    private fun enumFromStringFn(symbol: Symbol, data: String) = writable { }
-
     @Test
     fun `generate unions`() {
         val union = model.lookup<UnionShape>("com.test#MyUnion")
         val sut =
-            Instantiator(symbolProvider, model, runtimeConfig, BuilderKindBehavior(codegenContext), ::enumFromStringFn)
+            Instantiator(symbolProvider, model, runtimeConfig, BuilderKindBehavior(codegenContext))
         val data = Node.parse("""{ "stringVariant": "ok!" }""")
 
         val project = TestWorkspace.testProject(model)
@@ -129,7 +129,7 @@ class InstantiatorTest {
     fun `generate struct builders`() {
         val structure = model.lookup<StructureShape>("com.test#MyStruct")
         val sut =
-            Instantiator(symbolProvider, model, runtimeConfig, BuilderKindBehavior(codegenContext), ::enumFromStringFn)
+            Instantiator(symbolProvider, model, runtimeConfig, BuilderKindBehavior(codegenContext))
         val data = Node.parse("""{ "bar": 10, "foo": "hello" }""")
 
         val project = TestWorkspace.testProject(model)
@@ -154,17 +154,18 @@ class InstantiatorTest {
     fun `generate builders for boxed structs`() {
         val structure = model.lookup<StructureShape>("com.test#WithBox")
         val sut =
-            Instantiator(symbolProvider, model, runtimeConfig, BuilderKindBehavior(codegenContext), ::enumFromStringFn)
-        val data = Node.parse(
-            """
-            {
-                "member": {
-                    "member": { }
-                },
-                "value": 10
-            }
-            """,
-        )
+            Instantiator(symbolProvider, model, runtimeConfig, BuilderKindBehavior(codegenContext))
+        val data =
+            Node.parse(
+                """
+                {
+                    "member": {
+                        "member": { }
+                    },
+                    "value": 10
+                }
+                """,
+            )
 
         val project = TestWorkspace.testProject(model)
         structure.renderWithModelBuilder(model, symbolProvider, project)
@@ -193,7 +194,7 @@ class InstantiatorTest {
     fun `generate lists`() {
         val data = Node.parse("""["bar", "foo"]""")
         val sut =
-            Instantiator(symbolProvider, model, runtimeConfig, BuilderKindBehavior(codegenContext), ::enumFromStringFn)
+            Instantiator(symbolProvider, model, runtimeConfig, BuilderKindBehavior(codegenContext))
 
         val project = TestWorkspace.testProject()
         project.lib {
@@ -209,13 +210,13 @@ class InstantiatorTest {
     @Test
     fun `generate sparse lists`() {
         val data = Node.parse(""" [ "bar", "foo", null ] """)
-        val sut = Instantiator(
-            symbolProvider,
-            model,
-            runtimeConfig,
-            BuilderKindBehavior(codegenContext),
-            ::enumFromStringFn,
-        )
+        val sut =
+            Instantiator(
+                symbolProvider,
+                model,
+                runtimeConfig,
+                BuilderKindBehavior(codegenContext),
+            )
 
         val project = TestWorkspace.testProject(model)
         project.lib {
@@ -231,22 +232,23 @@ class InstantiatorTest {
 
     @Test
     fun `generate maps of maps`() {
-        val data = Node.parse(
-            """
-            {
-                "k1": { "map": {} },
-                "k2": { "map": { "k3": {} } },
-                "k3": { }
-            }
-            """,
-        )
-        val sut = Instantiator(
-            symbolProvider,
-            model,
-            runtimeConfig,
-            BuilderKindBehavior(codegenContext),
-            ::enumFromStringFn,
-        )
+        val data =
+            Node.parse(
+                """
+                {
+                    "k1": { "map": {} },
+                    "k2": { "map": { "k3": {} } },
+                    "k3": { }
+                }
+                """,
+            )
+        val sut =
+            Instantiator(
+                symbolProvider,
+                model,
+                runtimeConfig,
+                BuilderKindBehavior(codegenContext),
+            )
         val inner = model.lookup<StructureShape>("com.test#Inner")
 
         val project = TestWorkspace.testProject(model)
@@ -273,13 +275,13 @@ class InstantiatorTest {
     fun `blob inputs are binary data`() {
         // "Parameter values that contain binary data MUST be defined using values
         // that can be represented in plain text (for example, use "foo" and not "Zm9vCg==")."
-        val sut = Instantiator(
-            symbolProvider,
-            model,
-            runtimeConfig,
-            BuilderKindBehavior(codegenContext),
-            ::enumFromStringFn,
-        )
+        val sut =
+            Instantiator(
+                symbolProvider,
+                model,
+                runtimeConfig,
+                BuilderKindBehavior(codegenContext),
+            )
 
         val project = TestWorkspace.testProject(model)
         project.testModule {
@@ -301,13 +303,13 @@ class InstantiatorTest {
     fun `integer and fractional timestamps`() {
         // "Parameter values that contain binary data MUST be defined using values
         // that can be represented in plain text (for example, use "foo" and not "Zm9vCg==")."
-        val sut = Instantiator(
-            symbolProvider,
-            model,
-            runtimeConfig,
-            BuilderKindBehavior(codegenContext),
-            ::enumFromStringFn,
-        )
+        val sut =
+            Instantiator(
+                symbolProvider,
+                model,
+                runtimeConfig,
+                BuilderKindBehavior(codegenContext),
+            )
         val project = TestWorkspace.testProject(model)
         project.testModule {
             unitTest("timestamps") {
@@ -333,6 +335,47 @@ class InstantiatorTest {
                     "assert_eq!(ts_int, #{Timestamp}::from_secs(123));",
                     "Timestamp" to RuntimeType.dateTime(runtimeConfig),
                 )
+            }
+        }
+        project.compileAndTest()
+    }
+
+    @Test
+    fun `floating-point number instantiation`() {
+        val sut =
+            Instantiator(
+                symbolProvider,
+                model,
+                runtimeConfig,
+                BuilderKindBehavior(codegenContext),
+            )
+        val project = TestWorkspace.testProject(model)
+        project.testModule {
+            unitTest("default_number_instantiation") {
+                for ((value, node) in arrayOf(
+                    "1.0" to NumberNode.from(1),
+                    "1.5" to NumberNode.from(1.5),
+                    "1.0" to StringNode.from("1"),
+                    "1.5" to StringNode.from("1.5"),
+                )) {
+                    withBlock("let value: f32 = ", ";") {
+                        sut.render(
+                            this,
+                            FloatShape.builder().id(ShapeId.from("com.example#FloatShape")).build(),
+                            node,
+                        )
+                    }
+                    rustTemplate("assert_eq!($value, value);")
+
+                    withBlock("let value: f64 = ", ";") {
+                        sut.render(
+                            this,
+                            DoubleShape.builder().id(ShapeId.from("com.example#DoubleShape")).build(),
+                            node,
+                        )
+                    }
+                    rustTemplate("assert_eq!($value, value);")
+                }
             }
         }
         project.compileAndTest()

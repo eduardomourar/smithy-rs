@@ -10,13 +10,13 @@ import software.amazon.smithy.rust.codegen.client.smithy.ClientCodegenContext
 import software.amazon.smithy.rust.codegen.client.testutil.clientIntegrationTest
 import software.amazon.smithy.rust.codegen.core.rustlang.CargoDependency
 import software.amazon.smithy.rust.codegen.core.rustlang.rustTemplate
-import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType
 import software.amazon.smithy.rust.codegen.core.smithy.RustCrate
 import software.amazon.smithy.rust.codegen.core.testutil.asSmithyModel
 import software.amazon.smithy.rust.codegen.core.testutil.integrationTest
 
 class CustomizableOperationGeneratorTest {
-    val model = """
+    val model =
+        """
         namespace com.example
         use aws.protocols#awsJson1_0
 
@@ -31,7 +31,7 @@ class CustomizableOperationGeneratorTest {
         structure TestInput {
            foo: String,
         }
-    """.asSmithyModel()
+        """.asSmithyModel()
 
     @Test
     fun `CustomizableOperation is send and sync`() {
@@ -44,20 +44,17 @@ class CustomizableOperationGeneratorTest {
 
                     ##[test]
                     fn test() {
-                        let connector = #{TestConnection}::<#{SdkBody}>::new(Vec::new());
                         let config = $moduleName::Config::builder()
-                            .http_connector(connector.clone())
-                            .endpoint_resolver("http://localhost:1234")
+                            .http_client(#{NeverClient}::new())
+                            .endpoint_url("http://localhost:1234")
                             .build();
                         let client = $moduleName::Client::from_conf(config);
                         check_send_and_sync(client.say_hello().customize());
                     }
                     """,
-                    "TestConnection" to CargoDependency.smithyClient(codegenContext.runtimeConfig)
-                        .toDevDependency()
-                        .withFeature("test-util").toType()
-                        .resolve("test_connection::TestConnection"),
-                    "SdkBody" to RuntimeType.sdkBody(codegenContext.runtimeConfig),
+                    "NeverClient" to
+                        CargoDependency.smithyRuntimeTestUtil(codegenContext.runtimeConfig).toType()
+                            .resolve("client::http::test_util::NeverClient"),
                 )
             }
         }

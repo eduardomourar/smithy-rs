@@ -10,12 +10,12 @@
 //! version numbers in addition to the dependency path.
 
 use crate::fs::Fs;
-use crate::package::{discover_manifests, parse_version};
+use crate::package::discover_manifests;
 use crate::SDK_REPO_NAME;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use semver::Version;
-use smithy_rs_tool_common::ci::running_in_ci;
+use smithy_rs_tool_common::{ci::running_in_ci, package::parse_version};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -39,28 +39,25 @@ pub struct FixManifestsArgs {
     /// Checks manifests rather than fixing them
     #[clap(long)]
     check: bool,
-    /// Disable expected version number validation. This should only be used
-    /// when SDK crates are being generated with independent version numbers.
+    /// UNUSED. Kept for backwards compatibility. Can be removed in the future when
+    /// the older commits that rely on it have been synced over in a SDK release.
     #[clap(long)]
     disable_version_number_validation: bool,
 }
 
 pub async fn subcommand_fix_manifests(
     FixManifestsArgs {
-        location,
-        check,
-        disable_version_number_validation,
+        location, check, ..
     }: &FixManifestsArgs,
 ) -> Result<()> {
     let mode = match check {
         true => Mode::Check,
         false => Mode::Execute,
     };
-    let manifest_paths = discover_manifests(location.into()).await?;
+    let manifest_paths = discover_manifests(location).await?;
     let mut manifests = read_manifests(Fs::Real, manifest_paths).await?;
     let versions = package_versions(&manifests)?;
 
-    validate::validate_before_fixes(&versions, *disable_version_number_validation)?;
     fix_manifests(Fs::Real, &versions, &mut manifests, mode).await?;
     validate::validate_after_fixes(location).await?;
     info!("Successfully fixed manifests!");
@@ -78,9 +75,9 @@ impl Manifest {
         let value = self.metadata.get("package").and_then(|v| v.get("publish"));
         match value {
             None => Ok(true),
-            Some(value) => value
-                .as_bool()
-                .ok_or(anyhow::Error::msg("unexpected publish setting")),
+            Some(value) => value.as_bool().ok_or(anyhow::Error::msg(format!(
+                "unexpected publish setting: {value}"
+            ))),
         }
     }
 }
@@ -110,17 +107,6 @@ impl VersionView<'_> {
 impl Versions {
     fn published(&self) -> VersionView {
         VersionView(self, FilterType::PublishedOnly)
-    }
-
-    fn published_crates(&self) -> impl Iterator<Item = (&str, &Version)> + '_ {
-        self.0
-            .iter()
-            .filter(|(_, v)| v.publish)
-            .map(|(k, v)| (k.as_str(), &v.version))
-    }
-
-    fn get(&self, crate_name: &str) -> Option<&Version> {
-        self.0.get(crate_name).map(|v| &v.version)
     }
 }
 
@@ -188,6 +174,7 @@ fn fix_dep_set(versions: &VersionView, key: &str, metadata: &mut Value) -> Resul
     Ok(changed)
 }
 
+// Update a version of `dep_name` that has a path dependency to be that appearing in `versions`.
 fn update_dep(table: &mut Table, dep_name: &str, versions: &VersionView) -> Result<usize> {
     if !table.contains_key("path") {
         return Ok(0);
@@ -326,7 +313,7 @@ mod tests {
                 (
                     name.to_string(),
                     VersionWithMetadata {
-                        version: Version::parse(&version).unwrap(),
+                        version: Version::parse(version).unwrap(),
                         publish,
                     },
                 )

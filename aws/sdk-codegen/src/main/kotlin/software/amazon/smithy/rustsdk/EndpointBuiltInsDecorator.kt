@@ -11,8 +11,9 @@ import software.amazon.smithy.model.node.Node
 import software.amazon.smithy.model.node.StringNode
 import software.amazon.smithy.model.shapes.ServiceShape
 import software.amazon.smithy.model.shapes.ShapeId
+import software.amazon.smithy.rulesengine.aws.language.functions.AwsBuiltIns
 import software.amazon.smithy.rulesengine.language.EndpointRuleSet
-import software.amazon.smithy.rulesengine.language.syntax.parameters.Builtins
+import software.amazon.smithy.rulesengine.language.syntax.parameters.BuiltIns
 import software.amazon.smithy.rulesengine.language.syntax.parameters.Parameter
 import software.amazon.smithy.rulesengine.language.syntax.parameters.ParameterType
 import software.amazon.smithy.rust.codegen.client.smithy.ClientCodegenContext
@@ -49,7 +50,9 @@ fun EndpointRuleSet.getBuiltIn(builtIn: String) = parameters.toList().find { it.
 
 /** load a builtIn parameter from a ruleset. The returned builtIn is the one defined in the ruleset (including latest docs, etc.) */
 fun EndpointRuleSet.getBuiltIn(builtIn: Parameter) = getBuiltIn(builtIn.builtIn.orNull()!!)
+
 fun ClientCodegenContext.getBuiltIn(builtIn: Parameter): Parameter? = getBuiltIn(builtIn.builtIn.orNull()!!)
+
 fun ClientCodegenContext.getBuiltIn(builtIn: String): Parameter? {
     val idx = EndpointRulesetIndex.of(model)
     val rules = idx.endpointRulesForService(serviceShape) ?: return null
@@ -57,28 +60,39 @@ fun ClientCodegenContext.getBuiltIn(builtIn: String): Parameter? {
 }
 
 private fun promotedBuiltins(parameter: Parameter) =
-    parameter.builtIn == Builtins.FIPS.builtIn ||
-        parameter.builtIn == Builtins.DUALSTACK.builtIn ||
-        parameter.builtIn == Builtins.SDK_ENDPOINT.builtIn
+    parameter.builtIn == AwsBuiltIns.FIPS.builtIn ||
+        parameter.builtIn == AwsBuiltIns.DUALSTACK.builtIn ||
+        parameter.builtIn == BuiltIns.SDK_ENDPOINT.builtIn
 
-private fun configParamNewtype(parameter: Parameter, name: String, runtimeConfig: RuntimeConfig): RuntimeType {
+private fun configParamNewtype(
+    parameter: Parameter,
+    name: String,
+    runtimeConfig: RuntimeConfig,
+): RuntimeType {
     val type = parameter.symbol().mapRustType { t -> t.stripOuter<RustType.Option>() }
     return when (promotedBuiltins(parameter)) {
-        true -> AwsRuntimeType.awsTypes(runtimeConfig)
-            .resolve("endpoint_config::${name.toPascalCase()}")
+        true ->
+            AwsRuntimeType.awsTypes(runtimeConfig)
+                .resolve("endpoint_config::${name.toPascalCase()}")
 
         false -> configParamNewtype(name.toPascalCase(), type, runtimeConfig)
     }
 }
 
-private fun ConfigParam.Builder.toConfigParam(parameter: Parameter, runtimeConfig: RuntimeConfig): ConfigParam =
+private fun ConfigParam.Builder.toConfigParam(
+    parameter: Parameter,
+    runtimeConfig: RuntimeConfig,
+): ConfigParam =
     this.name(this.name ?: parameter.name.rustName())
         .type(parameter.symbol().mapRustType { t -> t.stripOuter<RustType.Option>() })
         .newtype(configParamNewtype(parameter, this.name!!, runtimeConfig))
         .setterDocs(this.setterDocs ?: parameter.documentation.orNull()?.let { writable { docs(it) } })
         .build()
 
-fun Model.loadBuiltIn(serviceId: ShapeId, builtInSrc: Parameter): Parameter? {
+fun Model.loadBuiltIn(
+    serviceId: ShapeId,
+    builtInSrc: Parameter,
+): Parameter? {
     val model = this
     val idx = EndpointRulesetIndex.of(model)
     val service = model.expectShape(serviceId, ServiceShape::class.java)
@@ -95,20 +109,32 @@ fun Model.sdkConfigSetter(
     val builtIn = loadBuiltIn(serviceId, builtInSrc) ?: return null
     val fieldName = configParameterNameOverride ?: builtIn.name.rustName()
 
-    val map = when (builtIn.type!!) {
-        ParameterType.STRING -> writable { rust("|s|s.to_string()") }
-        ParameterType.BOOLEAN -> null
+    val builtinType = builtIn.type!!
+    val map =
+        when (builtinType) {
+            ParameterType.STRING -> writable { rust("|s|s.to_string()") }
+            ParameterType.BOOLEAN -> null
+            // No builtins currently map to stringArray
+            else -> PANIC("needs to handle unimplemented endpoint parameter builtin type: $builtinType")
+        }
+
+    return if (fieldName == "endpoint_url") {
+        SdkConfigCustomization.copyFieldAndCheckForServiceConfig(fieldName, map)
+    } else {
+        SdkConfigCustomization.copyField(fieldName, map)
     }
-    return SdkConfigCustomization.copyField(fieldName, map)
 }
 
 /**
  * Create a client codegen decorator that creates bindings for a builtIn parameter. Optionally, you can provide
- * [clientParam.Builder] which allows control over the config parameter that will be generated.
+ * [clientParam.Builder] which allows control over the config parameter that will be generated. You can also opt
+ * to exclude including the extra sections that set the builtIn value on the SdkConfig. This is useful for builtIns
+ * that are only minimally supported, like accountId and accountIdEndpointMode.
  */
 fun decoratorForBuiltIn(
     builtIn: Parameter,
     clientParamBuilder: ConfigParam.Builder? = null,
+    includeSdkConfigSetter: Boolean = true,
 ): ClientCodegenDecorator {
     val nameOverride = clientParamBuilder?.name
     val name = nameOverride ?: builtIn.name.rustName()
@@ -120,9 +146,17 @@ fun decoratorForBuiltIn(
             codegenContext.getBuiltIn(builtIn) != null
 
         override fun extraSections(codegenContext: ClientCodegenContext): List<AdHocCustomization> {
-            return listOfNotNull(
-                codegenContext.model.sdkConfigSetter(codegenContext.serviceShape.id, builtIn, clientParamBuilder?.name),
-            )
+            if (includeSdkConfigSetter) {
+                return listOfNotNull(
+                    codegenContext.model.sdkConfigSetter(
+                        codegenContext.serviceShape.id,
+                        builtIn,
+                        clientParamBuilder?.name,
+                    ),
+                )
+            } else {
+                return listOf()
+            }
         }
 
         override fun configCustomizations(
@@ -133,54 +167,63 @@ fun decoratorForBuiltIn(
                 standardConfigParam(
                     clientParamBuilder?.toConfigParam(builtIn, codegenContext.runtimeConfig) ?: ConfigParam.Builder()
                         .toConfigParam(builtIn, codegenContext.runtimeConfig),
-                    codegenContext,
                 )
             }
         }
 
-        override fun endpointCustomizations(codegenContext: ClientCodegenContext): List<EndpointCustomization> = listOf(
-            object : EndpointCustomization {
-                override fun loadBuiltInFromServiceConfig(parameter: Parameter, configRef: String): Writable? =
-                    when (parameter.builtIn) {
-                        builtIn.builtIn -> writable {
-                            val newtype = configParamNewtype(parameter, name, codegenContext.runtimeConfig)
-                            val symbol = parameter.symbol().mapRustType { t -> t.stripOuter<RustType.Option>() }
-                            rustTemplate(
-                                """$configRef.#{load_from_service_config_layer}""",
-                                "load_from_service_config_layer" to loadFromConfigBag(symbol.name, newtype),
-                            )
+        override fun endpointCustomizations(codegenContext: ClientCodegenContext): List<EndpointCustomization> =
+            listOf(
+                object : EndpointCustomization {
+                    override fun loadBuiltInFromServiceConfig(
+                        parameter: Parameter,
+                        configRef: String,
+                    ): Writable? =
+                        when (parameter.builtIn) {
+                            builtIn.builtIn ->
+                                writable {
+                                    val newtype = configParamNewtype(parameter, name, codegenContext.runtimeConfig)
+                                    val symbol = parameter.symbol().mapRustType { t -> t.stripOuter<RustType.Option>() }
+                                    rustTemplate(
+                                        """$configRef.#{load_from_service_config_layer}""",
+                                        "load_from_service_config_layer" to loadFromConfigBag(symbol.name, newtype),
+                                    )
+                                }
+
+                            else -> null
                         }
 
-                        else -> null
+                    override fun setBuiltInOnServiceConfig(
+                        name: String,
+                        value: Node,
+                        configBuilderRef: String,
+                    ): Writable? {
+                        if (name != builtIn.builtIn.get()) {
+                            return null
+                        }
+                        return writable {
+                            rustTemplate(
+                                "let $configBuilderRef = $configBuilderRef.${nameOverride ?: builtIn.name.rustName()}(#{value});",
+                                "value" to value.toWritable(),
+                            )
+                        }
                     }
-
-                override fun setBuiltInOnServiceConfig(name: String, value: Node, configBuilderRef: String): Writable? {
-                    if (name != builtIn.builtIn.get()) {
-                        return null
-                    }
-                    return writable {
-                        rustTemplate(
-                            "let $configBuilderRef = $configBuilderRef.${nameOverride ?: builtIn.name.rustName()}(#{value});",
-                            "value" to value.toWritable(),
-                        )
-                    }
-                }
-            },
-        )
+                },
+            )
     }
 }
 
-private val endpointUrlDocs = writable {
-    rust(
-        """
-        /// Sets the endpoint URL used to communicate with this service
+private val endpointUrlDocs =
+    writable {
+        rust(
+            """
+            /// Sets the endpoint URL used to communicate with this service
 
-        /// Note: this is used in combination with other endpoint rules, e.g. an API that applies a host-label prefix
-        /// will be prefixed onto this URL. To fully override the endpoint resolver, use
-        /// [`Builder::endpoint_resolver`].
-        """.trimIndent(),
-    )
-}
+            /// Note: this is used in combination with other endpoint rules, e.g. an API that applies a host-label prefix
+            /// will be prefixed onto this URL. To fully override the endpoint resolver, use
+            /// [`Builder::endpoint_resolver`].
+            """.trimIndent(),
+        )
+    }
 
 fun Node.toWritable(): Writable {
     val node = this
@@ -195,13 +238,15 @@ fun Node.toWritable(): Writable {
 
 val PromotedBuiltInsDecorators =
     listOf(
-        decoratorForBuiltIn(Builtins.FIPS),
-        decoratorForBuiltIn(Builtins.DUALSTACK),
+        decoratorForBuiltIn(AwsBuiltIns.FIPS),
+        decoratorForBuiltIn(AwsBuiltIns.DUALSTACK),
         decoratorForBuiltIn(
-            Builtins.SDK_ENDPOINT,
+            BuiltIns.SDK_ENDPOINT,
             ConfigParam.Builder()
                 .name("endpoint_url")
                 .type(RuntimeType.String.toSymbol())
                 .setterDocs(endpointUrlDocs),
         ),
+        decoratorForBuiltIn(AwsBuiltIns.ACCOUNT_ID_ENDPOINT_MODE, null, false),
+        decoratorForBuiltIn(AwsBuiltIns.ACCOUNT_ID, null, false),
     ).toTypedArray()

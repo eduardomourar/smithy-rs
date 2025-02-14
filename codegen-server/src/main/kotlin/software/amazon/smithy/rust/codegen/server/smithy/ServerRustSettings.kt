@@ -14,7 +14,7 @@ import software.amazon.smithy.rust.codegen.core.smithy.CoreRustSettings
 import software.amazon.smithy.rust.codegen.core.smithy.RuntimeConfig
 import java.util.Optional
 
-/**
+/*
  * [ServerRustSettings] and [ServerCodegenConfig] classes.
  *
  * These classes are entirely analogous to [ClientRustSettings] and [ClientCodegenConfig]. Refer to the documentation
@@ -38,22 +38,27 @@ data class ServerRustSettings(
     override val codegenConfig: ServerCodegenConfig,
     override val license: String?,
     override val examplesUri: String?,
+    override val minimumSupportedRustVersion: String? = null,
     override val customizationConfig: ObjectNode?,
 ) : CoreRustSettings(
-    service,
-    moduleName,
-    moduleVersion,
-    moduleAuthors,
-    moduleDescription,
-    moduleRepository,
-    runtimeConfig,
-    codegenConfig,
-    license,
-    examplesUri,
-    customizationConfig,
-) {
+        service,
+        moduleName,
+        moduleVersion,
+        moduleAuthors,
+        moduleDescription,
+        moduleRepository,
+        runtimeConfig,
+        codegenConfig,
+        license,
+        examplesUri,
+        minimumSupportedRustVersion,
+        customizationConfig,
+    ) {
     companion object {
-        fun from(model: Model, config: ObjectNode): ServerRustSettings {
+        fun from(
+            model: Model,
+            config: ObjectNode,
+        ): ServerRustSettings {
             val coreRustSettings = CoreRustSettings.from(model, config)
             val codegenSettingsNode = config.getObjectMember(CODEGEN_SETTINGS)
             val coreCodegenConfig = CoreCodegenConfig.fromNode(codegenSettingsNode)
@@ -68,6 +73,7 @@ data class ServerRustSettings(
                 codegenConfig = ServerCodegenConfig.fromCodegenConfigAndNode(coreCodegenConfig, codegenSettingsNode),
                 license = coreRustSettings.license,
                 examplesUri = coreRustSettings.examplesUri,
+                minimumSupportedRustVersion = coreRustSettings.minimumSupportedRustVersion,
                 customizationConfig = coreRustSettings.customizationConfig,
             )
         }
@@ -79,39 +85,44 @@ data class ServerRustSettings(
  * [ignoreUnsupportedConstraints]: Generate model even though unsupported constraints are present
  */
 data class ServerCodegenConfig(
-    override val formatTimeoutSeconds: Int = defaultFormatTimeoutSeconds,
-    override val debugMode: Boolean = defaultDebugMode,
-    val publicConstrainedTypes: Boolean = defaultPublicConstrainedTypes,
-    val ignoreUnsupportedConstraints: Boolean = defaultIgnoreUnsupportedConstraints,
+    override val formatTimeoutSeconds: Int = DEFAULT_FORMAT_TIMEOUT_SECONDS,
+    override val debugMode: Boolean = DEFAULT_DEBUG_MODE,
+    val publicConstrainedTypes: Boolean = DEFAULT_PUBLIC_CONSTRAINED_TYPES,
+    val ignoreUnsupportedConstraints: Boolean = DEFAULT_IGNORE_UNSUPPORTED_CONSTRAINTS,
     /**
      * A flag to enable _experimental_ support for custom validation exceptions via the
      * [CustomValidationExceptionWithReasonDecorator] decorator.
-     * TODO(https://github.com/awslabs/smithy-rs/pull/2053): this will go away once we implement the RFC, when users will be
+     * TODO(https://github.com/smithy-lang/smithy-rs/pull/2053): this will go away once we implement the RFC, when users will be
      *  able to define the converters in their Rust application code.
      */
     val experimentalCustomValidationExceptionWithReasonPleaseDoNotUse: String? = defaultExperimentalCustomValidationExceptionWithReasonPleaseDoNotUse,
+    val addValidationExceptionToConstrainedOperations: Boolean = DEFAULT_ADD_VALIDATION_EXCEPTION_TO_CONSTRAINED_OPERATIONS,
 ) : CoreCodegenConfig(
-    formatTimeoutSeconds, debugMode,
-) {
+        formatTimeoutSeconds, debugMode,
+    ) {
     companion object {
-        private const val defaultPublicConstrainedTypes = true
-        private const val defaultIgnoreUnsupportedConstraints = false
+        private const val DEFAULT_PUBLIC_CONSTRAINED_TYPES = true
+        private const val DEFAULT_IGNORE_UNSUPPORTED_CONSTRAINTS = false
         private val defaultExperimentalCustomValidationExceptionWithReasonPleaseDoNotUse = null
+        private const val DEFAULT_ADD_VALIDATION_EXCEPTION_TO_CONSTRAINED_OPERATIONS = false
 
-        fun fromCodegenConfigAndNode(coreCodegenConfig: CoreCodegenConfig, node: Optional<ObjectNode>) =
-            if (node.isPresent) {
-                ServerCodegenConfig(
-                    formatTimeoutSeconds = coreCodegenConfig.formatTimeoutSeconds,
-                    debugMode = coreCodegenConfig.debugMode,
-                    publicConstrainedTypes = node.get().getBooleanMemberOrDefault("publicConstrainedTypes", defaultPublicConstrainedTypes),
-                    ignoreUnsupportedConstraints = node.get().getBooleanMemberOrDefault("ignoreUnsupportedConstraints", defaultIgnoreUnsupportedConstraints),
-                    experimentalCustomValidationExceptionWithReasonPleaseDoNotUse = node.get().getStringMemberOrDefault("experimentalCustomValidationExceptionWithReasonPleaseDoNotUse", defaultExperimentalCustomValidationExceptionWithReasonPleaseDoNotUse),
-                )
-            } else {
-                ServerCodegenConfig(
-                    formatTimeoutSeconds = coreCodegenConfig.formatTimeoutSeconds,
-                    debugMode = coreCodegenConfig.debugMode,
-                )
-            }
+        fun fromCodegenConfigAndNode(
+            coreCodegenConfig: CoreCodegenConfig,
+            node: Optional<ObjectNode>,
+        ) = if (node.isPresent) {
+            ServerCodegenConfig(
+                formatTimeoutSeconds = coreCodegenConfig.formatTimeoutSeconds,
+                debugMode = coreCodegenConfig.debugMode,
+                publicConstrainedTypes = node.get().getBooleanMemberOrDefault("publicConstrainedTypes", DEFAULT_PUBLIC_CONSTRAINED_TYPES),
+                ignoreUnsupportedConstraints = node.get().getBooleanMemberOrDefault("ignoreUnsupportedConstraints", DEFAULT_IGNORE_UNSUPPORTED_CONSTRAINTS),
+                experimentalCustomValidationExceptionWithReasonPleaseDoNotUse = node.get().getStringMemberOrDefault("experimentalCustomValidationExceptionWithReasonPleaseDoNotUse", defaultExperimentalCustomValidationExceptionWithReasonPleaseDoNotUse),
+                addValidationExceptionToConstrainedOperations = node.get().getBooleanMemberOrDefault("addValidationExceptionToConstrainedOperations", DEFAULT_ADD_VALIDATION_EXCEPTION_TO_CONSTRAINED_OPERATIONS),
+            )
+        } else {
+            ServerCodegenConfig(
+                formatTimeoutSeconds = coreCodegenConfig.formatTimeoutSeconds,
+                debugMode = coreCodegenConfig.debugMode,
+            )
+        }
     }
 }

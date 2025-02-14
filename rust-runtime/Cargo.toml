@@ -1,10 +1,11 @@
 [workspace]
-
-
+resolver = "2"
 members = [
     "inlineable",
     "aws-smithy-async",
+    "aws-smithy-cbor",
     "aws-smithy-checksums",
+    "aws-smithy-compression",
     "aws-smithy-client",
     "aws-smithy-eventstream",
     "aws-smithy-http",
@@ -19,5 +20,10 @@ members = [
     "aws-smithy-runtime-api",
     "aws-smithy-types",
     "aws-smithy-types-convert",
+    "aws-smithy-wasm",
+    "aws-smithy-mocks-experimental",
+    "aws-smithy-experimental",
     "aws-smithy-xml",
+    "aws-smithy-observability",
+    "aws-smithy-observability-otel",
 ]

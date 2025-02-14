@@ -9,7 +9,8 @@ import software.amazon.smithy.rustsdk.awsSdkIntegrationTest
 
 class SdkCodegenIntegrationTest {
     companion object {
-        val model = """
+        val model =
+            """
             namespace test
 
             use aws.api#service
@@ -43,11 +44,13 @@ class SdkCodegenIntegrationTest {
             operation SomeOperation {
                 output: SomeOutput
             }
-        """.asSmithyModel()
+            """.asSmithyModel()
     }
 
     @Test
     fun smokeTestSdkCodegen() {
-        awsSdkIntegrationTest(model) { _, _ -> /* it should compile */ }
+        awsSdkIntegrationTest(model) { _, _ ->
+            // it should compile
+        }
     }
 }

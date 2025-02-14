@@ -37,32 +37,39 @@ import software.amazon.smithy.rust.codegen.server.smithy.protocols.ServerRestJso
  */
 class PythonServerAfterDeserializedMemberJsonParserCustomization(private val runtimeConfig: RuntimeConfig) :
     JsonParserCustomization() {
-    override fun section(section: JsonParserSection): Writable = when (section) {
-        is JsonParserSection.AfterTimestampDeserializedMember -> writable {
-            rust(".map(#T::from)", PythonServerRuntimeType.dateTime(runtimeConfig).toSymbol())
+    override fun section(section: JsonParserSection): Writable =
+        when (section) {
+            is JsonParserSection.AfterTimestampDeserializedMember ->
+                writable {
+                    rust(".map(#T::from)", PythonServerRuntimeType.dateTime(runtimeConfig).toSymbol())
+                }
+            is JsonParserSection.AfterBlobDeserializedMember ->
+                writable {
+                    rust(".map(#T::from)", PythonServerRuntimeType.blob(runtimeConfig).toSymbol())
+                }
+            is JsonParserSection.AfterDocumentDeserializedMember ->
+                writable {
+                    rust(".map(#T::from)", PythonServerRuntimeType.document(runtimeConfig).toSymbol())
+                }
+            else -> emptySection
         }
-        is JsonParserSection.AfterBlobDeserializedMember -> writable {
-            rust(".map(#T::from)", PythonServerRuntimeType.blob(runtimeConfig).toSymbol())
-        }
-        is JsonParserSection.AfterDocumentDeserializedMember -> writable {
-            rust(".map(#T::from)", PythonServerRuntimeType.document(runtimeConfig).toSymbol())
-        }
-        else -> emptySection
-    }
 }
 
 /**
- * Customization class used to force casting a non primitive type into one overriden by a new symbol provider,
+ * Customization class used to force casting a non-primitive type into one overridden by a new symbol provider,
  * by explicitly calling `into()` on it.
  */
-class PythonServerAfterDeserializedMemberServerHttpBoundCustomization() :
+class PythonServerAfterDeserializedMemberServerHttpBoundCustomization :
     ServerHttpBoundProtocolCustomization() {
-    override fun section(section: ServerHttpBoundProtocolSection): Writable = when (section) {
-        is ServerHttpBoundProtocolSection.AfterTimestampDeserializedMember -> writable {
-            rust(".into()")
+    override fun section(section: ServerHttpBoundProtocolSection): Writable =
+        when (section) {
+            is ServerHttpBoundProtocolSection.AfterTimestampDeserializedMember ->
+                writable {
+                    rust(".into()")
+                }
+
+            else -> emptySection
         }
-        else -> emptySection
-    }
 }
 
 /**
@@ -70,56 +77,91 @@ class PythonServerAfterDeserializedMemberServerHttpBoundCustomization() :
  */
 class PythonServerAfterDeserializedMemberHttpBindingCustomization(private val runtimeConfig: RuntimeConfig) :
     HttpBindingCustomization() {
-    override fun section(section: HttpBindingSection): Writable = when (section) {
-        is HttpBindingSection.AfterDeserializingIntoADateTimeOfHttpHeaders -> writable {
-            rust(".into_iter().map(#T::from).collect()", PythonServerRuntimeType.dateTime(runtimeConfig).toSymbol())
+    override fun section(section: HttpBindingSection): Writable =
+        when (section) {
+            is HttpBindingSection.AfterDeserializingIntoADateTimeOfHttpHeaders ->
+                writable {
+                    rust(".into_iter().map(#T::from).collect()", PythonServerRuntimeType.dateTime(runtimeConfig).toSymbol())
+                }
+            else -> emptySection
         }
-        else -> emptySection
-    }
+}
+
+/**
+ * Customization class used to determine how serialized stream payload should be rendered for the Python server.
+ *
+ * In this customization, we do not need to wrap the payload in a new-type wrapper to enable the
+ * `futures_core::stream::Stream` trait since the payload in question has a type
+ * `aws_smithy_http_server_python::types::ByteStream` which already implements the `Stream` trait.
+ */
+class PythonServerStreamPayloadSerializerCustomization() : ServerHttpBoundProtocolCustomization() {
+    override fun section(section: ServerHttpBoundProtocolSection): Writable =
+        when (section) {
+            is ServerHttpBoundProtocolSection.WrapStreamPayload ->
+                writable {
+                    section.params.payloadGenerator.generatePayload(this, section.params.shapeName, section.params.shape)
+                }
+
+            else -> emptySection
+        }
 }
 
 class PythonServerProtocolLoader(
     private val supportedProtocols: ProtocolMap<ServerProtocolGenerator, ServerCodegenContext>,
 ) : ProtocolLoader<ServerProtocolGenerator, ServerCodegenContext>(supportedProtocols) {
-
     companion object {
         fun defaultProtocols(runtimeConfig: RuntimeConfig) =
             mapOf(
-                RestJson1Trait.ID to ServerRestJsonFactory(
-                    additionalParserCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberJsonParserCustomization(runtimeConfig),
+                RestJson1Trait.ID to
+                    ServerRestJsonFactory(
+                        additionalParserCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberJsonParserCustomization(runtimeConfig),
+                            ),
+                        additionalServerHttpBoundProtocolCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberServerHttpBoundCustomization(),
+                                PythonServerStreamPayloadSerializerCustomization(),
+                            ),
+                        additionalHttpBindingCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberHttpBindingCustomization(runtimeConfig),
+                            ),
                     ),
-                    additionalServerHttpBoundProtocolCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberServerHttpBoundCustomization(),
+                AwsJson1_0Trait.ID to
+                    ServerAwsJsonFactory(
+                        AwsJsonVersion.Json10,
+                        additionalParserCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberJsonParserCustomization(runtimeConfig),
+                            ),
+                        additionalServerHttpBoundProtocolCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberServerHttpBoundCustomization(),
+                                PythonServerStreamPayloadSerializerCustomization(),
+                            ),
+                        additionalHttpBindingCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberHttpBindingCustomization(runtimeConfig),
+                            ),
                     ),
-                    additionalHttpBindingCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberHttpBindingCustomization(runtimeConfig),
+                AwsJson1_1Trait.ID to
+                    ServerAwsJsonFactory(
+                        AwsJsonVersion.Json11,
+                        additionalParserCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberJsonParserCustomization(runtimeConfig),
+                            ),
+                        additionalServerHttpBoundProtocolCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberServerHttpBoundCustomization(),
+                                PythonServerStreamPayloadSerializerCustomization(),
+                            ),
+                        additionalHttpBindingCustomizations =
+                            listOf(
+                                PythonServerAfterDeserializedMemberHttpBindingCustomization(runtimeConfig),
+                            ),
                     ),
-                ),
-                AwsJson1_0Trait.ID to ServerAwsJsonFactory(
-                    AwsJsonVersion.Json10,
-                    additionalParserCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberJsonParserCustomization(runtimeConfig),
-                    ),
-                    additionalServerHttpBoundProtocolCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberServerHttpBoundCustomization(),
-                    ),
-                    additionalHttpBindingCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberHttpBindingCustomization(runtimeConfig),
-                    ),
-                ),
-                AwsJson1_1Trait.ID to ServerAwsJsonFactory(
-                    AwsJsonVersion.Json11,
-                    additionalParserCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberJsonParserCustomization(runtimeConfig),
-                    ),
-                    additionalServerHttpBoundProtocolCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberServerHttpBoundCustomization(),
-                    ),
-                    additionalHttpBindingCustomizations = listOf(
-                        PythonServerAfterDeserializedMemberHttpBindingCustomization(runtimeConfig),
-                    ),
-                ),
             )
     }
 }

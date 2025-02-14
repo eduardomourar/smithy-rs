@@ -7,7 +7,6 @@ package software.amazon.smithy.rust.codegen.client.smithy
 
 import software.amazon.smithy.build.PluginContext
 import software.amazon.smithy.model.Model
-import software.amazon.smithy.model.knowledge.NullableIndex
 import software.amazon.smithy.model.shapes.OperationShape
 import software.amazon.smithy.model.shapes.ServiceShape
 import software.amazon.smithy.model.shapes.Shape
@@ -22,9 +21,10 @@ import software.amazon.smithy.rust.codegen.client.smithy.customize.ClientCodegen
 import software.amazon.smithy.rust.codegen.client.smithy.generators.ClientEnumGenerator
 import software.amazon.smithy.rust.codegen.client.smithy.generators.OperationGenerator
 import software.amazon.smithy.rust.codegen.client.smithy.generators.ServiceGenerator
+import software.amazon.smithy.rust.codegen.client.smithy.generators.client.CustomizableOperationImplGenerator
 import software.amazon.smithy.rust.codegen.client.smithy.generators.error.ErrorGenerator
 import software.amazon.smithy.rust.codegen.client.smithy.generators.error.OperationErrorGenerator
-import software.amazon.smithy.rust.codegen.client.smithy.generators.protocol.DefaultProtocolTestGenerator
+import software.amazon.smithy.rust.codegen.client.smithy.generators.protocol.ClientProtocolTestGenerator
 import software.amazon.smithy.rust.codegen.client.smithy.protocols.ClientProtocolLoader
 import software.amazon.smithy.rust.codegen.client.smithy.transformers.AddErrorMessage
 import software.amazon.smithy.rust.codegen.client.smithy.transformers.RemoveEventStreamOperations
@@ -74,48 +74,55 @@ class ClientCodegenVisitor(
     private val operationGenerator: OperationGenerator
 
     init {
-        val rustSymbolProviderConfig = RustSymbolProviderConfig(
-            runtimeConfig = settings.runtimeConfig,
-            renameExceptions = settings.codegenConfig.renameExceptions,
-            nullabilityCheckMode = NullableIndex.CheckMode.CLIENT_ZERO_VALUE_V1,
-            moduleProvider = ClientModuleProvider,
-            nameBuilderFor = { symbol -> "${symbol.name}Builder" },
-        )
+        val rustSymbolProviderConfig =
+            RustSymbolProviderConfig(
+                runtimeConfig = settings.runtimeConfig,
+                renameExceptions = settings.codegenConfig.renameExceptions,
+                nullabilityCheckMode = settings.codegenConfig.nullabilityCheckMode,
+                moduleProvider = ClientModuleProvider,
+                nameBuilderFor = { symbol -> "${symbol.name}Builder" },
+            )
+
         val baseModel = baselineTransform(context.model)
         val untransformedService = settings.getService(baseModel)
-        val (protocol, generator) = ClientProtocolLoader(
-            codegenDecorator.protocols(untransformedService.id, ClientProtocolLoader.DefaultProtocols),
-        ).protocolFor(context.model, untransformedService)
+        val (protocol, generator) =
+            ClientProtocolLoader(
+                codegenDecorator.protocols(untransformedService.id, ClientProtocolLoader.DefaultProtocols),
+            ).protocolFor(context.model, untransformedService)
         protocolGeneratorFactory = generator
         model = codegenDecorator.transformModel(untransformedService, baseModel, settings)
         // the model transformer _might_ change the service shape
         val service = settings.getService(model)
         symbolProvider = RustClientCodegenPlugin.baseSymbolProvider(settings, model, service, rustSymbolProviderConfig, codegenDecorator)
 
-        codegenContext = ClientCodegenContext(
-            model,
-            symbolProvider,
-            null,
-            service,
-            protocol,
-            settings,
-            codegenDecorator,
-        )
+        codegenContext =
+            ClientCodegenContext(
+                model,
+                symbolProvider,
+                null,
+                service,
+                protocol,
+                settings,
+                codegenDecorator,
+            )
 
-        codegenContext = codegenContext.copy(
-            moduleDocProvider = codegenDecorator.moduleDocumentationCustomization(
-                codegenContext,
-                ClientModuleDocProvider(codegenContext, service.serviceNameOrDefault("the service")),
-            ),
-            protocolImpl = protocolGeneratorFactory.protocol(codegenContext),
-        )
+        codegenContext =
+            codegenContext.copy(
+                moduleDocProvider =
+                    codegenDecorator.moduleDocumentationCustomization(
+                        codegenContext,
+                        ClientModuleDocProvider(codegenContext, service.serviceNameOrDefault("the service")),
+                    ),
+                protocolImpl = protocolGeneratorFactory.protocol(codegenContext),
+            )
 
-        rustCrate = RustCrate(
-            context.fileManifest,
-            symbolProvider,
-            codegenContext.settings.codegenConfig,
-            codegenContext.expectModuleDocProvider(),
-        )
+        rustCrate =
+            RustCrate(
+                context.fileManifest,
+                symbolProvider,
+                codegenContext.settings.codegenConfig,
+                codegenContext.expectModuleDocProvider(),
+            )
         operationGenerator = protocolGeneratorFactory.buildProtocolGenerator(codegenContext)
     }
 
@@ -214,42 +221,46 @@ class ClientCodegenVisitor(
      * This function _does not_ generate any serializers
      */
     override fun structureShape(shape: StructureShape) {
-        val (renderStruct, renderBuilder) = when (val errorTrait = shape.getTrait<ErrorTrait>()) {
-            null -> {
-                val struct: Writable = {
-                    StructureGenerator(
-                        model,
-                        symbolProvider,
-                        this,
-                        shape,
-                        codegenDecorator.structureCustomizations(codegenContext, emptyList()),
-                    ).render()
+        val (renderStruct, renderBuilder) =
+            when (val errorTrait = shape.getTrait<ErrorTrait>()) {
+                null -> {
+                    val struct: Writable = {
+                        StructureGenerator(
+                            model,
+                            symbolProvider,
+                            this,
+                            shape,
+                            codegenDecorator.structureCustomizations(codegenContext, emptyList()),
+                            structSettings = codegenContext.structSettings(),
+                        ).render()
 
-                    implBlock(symbolProvider.toSymbol(shape)) {
-                        BuilderGenerator.renderConvenienceMethod(this, symbolProvider, shape)
+                        implBlock(symbolProvider.toSymbol(shape)) {
+                            BuilderGenerator.renderConvenienceMethod(this, symbolProvider, shape)
+                        }
                     }
+                    val builder: Writable = {
+                        BuilderGenerator(
+                            codegenContext.model,
+                            codegenContext.symbolProvider,
+                            shape,
+                            codegenDecorator.builderCustomizations(codegenContext, emptyList()),
+                        ).render(this)
+                    }
+                    struct to builder
                 }
-                val builder: Writable = {
-                    BuilderGenerator(
-                        codegenContext.model,
-                        codegenContext.symbolProvider,
-                        shape,
-                        codegenDecorator.builderCustomizations(codegenContext, emptyList()),
-                    ).render(this)
+                else -> {
+                    val errorGenerator =
+                        ErrorGenerator(
+                            model,
+                            symbolProvider,
+                            shape,
+                            errorTrait,
+                            codegenDecorator.errorImplCustomizations(codegenContext, emptyList()),
+                            codegenContext.structSettings(),
+                        )
+                    errorGenerator::renderStruct to errorGenerator::renderBuilder
                 }
-                struct to builder
             }
-            else -> {
-                val errorGenerator = ErrorGenerator(
-                    model,
-                    symbolProvider,
-                    shape,
-                    errorTrait,
-                    codegenDecorator.errorImplCustomizations(codegenContext, emptyList()),
-                )
-                errorGenerator::renderStruct to errorGenerator::renderBuilder
-            }
-        }
 
         val privateModule = privateModule(shape)
         rustCrate.inPrivateModuleWithReexport(privateModule, symbolProvider.toSymbol(shape)) {
@@ -301,10 +312,10 @@ class ClientCodegenVisitor(
      * Generate operations
      */
     override fun operationShape(operationShape: OperationShape) {
-        rustCrate.useShapeWriter(operationShape) operationWriter@{
+        rustCrate.useShapeWriter(operationShape) {
             // Render the operation shape
             operationGenerator.renderOperation(
-                this@operationWriter,
+                this,
                 operationShape,
                 codegenDecorator,
             )
@@ -312,21 +323,29 @@ class ClientCodegenVisitor(
             // render protocol tests into `operation.rs` (note operationWriter vs. inputWriter)
             codegenDecorator.protocolTestGenerator(
                 codegenContext,
-                DefaultProtocolTestGenerator(
+                ClientProtocolTestGenerator(
                     codegenContext,
                     protocolGeneratorFactory.support(),
                     operationShape,
                 ),
-            ).render(this@operationWriter)
+            ).render(this)
+        }
 
-            rustCrate.withModule(symbolProvider.moduleForOperationError(operationShape)) {
-                OperationErrorGenerator(
-                    model,
-                    symbolProvider,
-                    operationShape,
-                    codegenDecorator.errorCustomizations(codegenContext, emptyList()),
-                ).render(this)
-            }
+        rustCrate.withModule(symbolProvider.moduleForOperationError(operationShape)) {
+            OperationErrorGenerator(
+                model,
+                symbolProvider,
+                operationShape,
+                codegenDecorator.errorCustomizations(codegenContext, emptyList()),
+            ).render(this)
+        }
+
+        rustCrate.withModule(ClientRustModule.Client.customize) {
+            CustomizableOperationImplGenerator(
+                codegenContext,
+                operationShape,
+                codegenDecorator.operationCustomizations(codegenContext, operationShape, emptyList()),
+            ).render(this)
         }
     }
 }

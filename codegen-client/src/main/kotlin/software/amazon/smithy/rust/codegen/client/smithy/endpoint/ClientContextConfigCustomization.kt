@@ -7,6 +7,7 @@ package software.amazon.smithy.rust.codegen.client.smithy.endpoint
 
 import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.model.shapes.BooleanShape
+import software.amazon.smithy.model.shapes.ListShape
 import software.amazon.smithy.model.shapes.ShapeType
 import software.amazon.smithy.model.shapes.StringShape
 import software.amazon.smithy.rulesengine.traits.ClientContextParamDefinition
@@ -37,16 +38,21 @@ import software.amazon.smithy.rust.codegen.core.util.toSnakeCase
  */
 class ClientContextConfigCustomization(ctx: ClientCodegenContext) : ConfigCustomization() {
     private val runtimeConfig = ctx.runtimeConfig
-    private val configParams = ctx.serviceShape.getTrait<ClientContextParamsTrait>()?.parameters.orEmpty().toList()
-        .map { (key, value) -> fromClientParam(key, value, ctx.symbolProvider, runtimeConfig) }
-    private val decorators = configParams.map { standardConfigParam(it, ctx) }
+    private val configParams =
+        ctx.serviceShape.getTrait<ClientContextParamsTrait>()?.parameters.orEmpty().toList()
+            .map { (key, value) -> fromClientParam(key, value, ctx.symbolProvider, runtimeConfig) }
+    private val decorators = configParams.map { standardConfigParam(it) }
 
     companion object {
-        fun toSymbol(shapeType: ShapeType, symbolProvider: RustSymbolProvider): Symbol =
+        fun toSymbol(
+            shapeType: ShapeType,
+            symbolProvider: RustSymbolProvider,
+        ): Symbol =
             symbolProvider.toSymbol(
                 when (shapeType) {
                     ShapeType.STRING -> StringShape.builder().id("smithy.api#String").build()
                     ShapeType.BOOLEAN -> BooleanShape.builder().id("smithy.api#Boolean").build()
+                    ShapeType.LIST -> ListShape.builder().id("smithy.api#List").build()
                     else -> TODO("unsupported type")
                 },
             )

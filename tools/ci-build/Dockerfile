@@ -6,18 +6,18 @@
 # This is the base Docker build image used by CI
 
 ARG base_image=public.ecr.aws/amazonlinux/amazonlinux:2023
-ARG rust_stable_version=1.70.0
-ARG rust_nightly_version=nightly-2023-05-31
+ARG rust_stable_version=1.81.0
+ARG rust_nightly_version=nightly-2024-06-30
 
 FROM ${base_image} AS bare_base_image
 RUN yum -y updateinfo
 
 FROM bare_base_image as musl_toolchain
 RUN yum -y install --allowerasing tar gzip gcc make
-RUN curl https://musl.libc.org/releases/musl-1.2.3.tar.gz -o musl-1.2.3.tar.gz \
-  && ls \
-  && tar xvzf musl-1.2.3.tar.gz \
-  && (cd musl-1.2.3 && ./configure && make install)
+RUN curl https://musl.libc.org/releases/musl-1.2.5.tar.gz -o musl-1.2.5.tar.gz \
+    && ls \
+    && tar xvzf musl-1.2.5.tar.gz \
+    && (cd musl-1.2.5 && ./configure && make install)
 
 #
 # Rust & Tools Installation Stage
@@ -35,6 +35,7 @@ RUN yum -y install --allowerasing \
         automake \
         binutils \
         ca-certificates \
+        cmake \
         curl \
         gcc \
         gcc-c++ \
@@ -63,7 +64,9 @@ RUN set -eux; \
     rustup toolchain install ${rust_nightly_version} --component clippy; \
     rustup target add x86_64-unknown-linux-musl; \
     rustup target add wasm32-unknown-unknown; \
+    # NOTE: wasm32-wasi target is still valid in MSRV 1.81, when we update to 1.84 or above we _should_ be able to remove this target in favor of just wasip1
     rustup target add wasm32-wasi; \
+    rustup target add wasm32-wasip1; \
     cargo --version; \
     cargo +${rust_nightly_version} --version;
 
@@ -73,78 +76,74 @@ COPY . tools/ci-build
 # when `checkout_smithy_rs_tools` is set to true, this commit will be checked out
 ARG smithy_rs_commit_hash=main
 # If the `checkout_smithy_rs_tools` arg is set to true, then the Dockerfile will acquire the tools
-# source code by checking out awslabs/smithy-rs/main rather than copying them from the local directory.
+# source code by checking out smithy-lang/smithy-rs/main rather than copying them from the local directory.
 ARG checkout_smithy_rs_tools=false
 RUN set -eux; \
     if [[ "${checkout_smithy_rs_tools}" == "true" ]]; then \
-        git clone https://github.com/awslabs/smithy-rs.git; \
+        git clone https://github.com/smithy-lang/smithy-rs.git; \
         cd smithy-rs; \
         git checkout ${smithy_rs_commit_hash}; \
     fi; \
-    cargo install --locked --path tools/ci-build/publisher; \
     cargo install --locked --path tools/ci-build/changelogger; \
     cargo install --locked --path tools/ci-build/crate-hasher; \
     cargo install --locked --path tools/ci-build/difftags; \
+    cargo install --locked --path tools/ci-build/publisher; \
+    cargo install --locked --path tools/ci-build/runtime-versioner; \
     cargo install --locked --path tools/ci-build/sdk-lints; \
+    cargo install --locked --path tools/ci-build/sdk-lockfiles; \
     cargo install --locked --path tools/ci-build/sdk-versioner; \
     chmod g+rw -R /opt/cargo/registry
 
 FROM install_rust AS cargo_deny
-ARG cargo_deny_version=0.13.5
+ARG cargo_deny_version=0.16.1
 RUN cargo install cargo-deny --locked --version ${cargo_deny_version}
 
 FROM install_rust AS cargo_udeps
-ARG cargo_udeps_version=0.1.35
+ARG cargo_udeps_version=0.1.52
 ARG rust_nightly_version
 RUN cargo +${rust_nightly_version} install cargo-udeps --locked --version ${cargo_udeps_version}
 
 FROM install_rust AS cargo_hack
-ARG cargo_hack_version=0.5.23
+ARG cargo_hack_version=0.6.27
 RUN cargo install cargo-hack --locked --version ${cargo_hack_version}
 
 FROM install_rust AS cargo_minimal_versions
-ARG cargo_minimal_versions_version=0.1.8
+ARG cargo_minimal_versions_version=0.1.27
 RUN cargo install cargo-minimal-versions --locked --version ${cargo_minimal_versions_version}
 
 FROM install_rust AS cargo_check_external_types
-ARG cargo_check_external_types_version=0.1.7
+ARG cargo_check_external_types_version=0.1.13
 RUN cargo install cargo-check-external-types --locked --version ${cargo_check_external_types_version}
 
 FROM install_rust AS maturin
-ARG maturin_version=0.14.1
+ARG maturin_version=1.5.1
 RUN cargo install maturin --locked --version ${maturin_version}
 
 FROM install_rust AS wasm_pack
-ARG wasm_pack_version=0.11.0
+ARG wasm_pack_version=0.13.1
 RUN cargo install wasm-pack --locked --version ${wasm_pack_version}
 
 FROM install_rust AS wasmtime
-ARG wasmtime_precompiled_url=https://github.com/bytecodealliance/wasmtime/releases/download/v7.0.0/wasmtime-v7.0.0-x86_64-linux.tar.xz
-ARG wasmtime_precompiled_sha256=b8a1c97f9107c885ea73a5c38677d0d340a7c26879d366e8a5f3dce84cffec99
-RUN set -eux; \
-    curl "${wasmtime_precompiled_url}" -L -o wasmtime.xz; \
-    echo "${wasmtime_precompiled_sha256} wasmtime.xz" | sha256sum --check; \
-    tar xf wasmtime.xz; \
-    mv wasmtime-v*/wasmtime /opt;
+ARG cargo_wasmtime_version=28.0.0
+ARG rust_nightly_version
+RUN cargo install wasmtime-cli --features="component-model" --locked --version ${cargo_wasmtime_version}
 
-FROM install_rust AS cargo_wasi
-ARG cargo_wasi_version=0.1.27
-RUN cargo install cargo-wasi --locked --version ${cargo_wasi_version}
+FROM install_rust AS cargo_component
+ARG cargo_component_version=0.20.0
+ARG rust_nightly_version
+RUN cargo +${rust_nightly_version} install cargo-component --locked --version ${cargo_component_version}
 
 FROM install_rust AS cargo_semver_checks
-ARG cargo_semver_checks_version=0.20.0
-ARG rust_nightly_version
-RUN cargo +${rust_nightly_version} -Z sparse-registry install cargo-semver-checks --locked --version ${cargo_semver_checks_version}
+ARG cargo_semver_checks_version=0.36.0
+RUN cargo install cargo-semver-checks --locked --version ${cargo_semver_checks_version}
 
 FROM install_rust AS cargo_mdbook
-ARG cargo_mdbook_version=0.4.30
-ARG rust_nightly_version
-RUN cargo +${rust_nightly_version} -Z sparse-registry install mdbook --locked --version ${cargo_mdbook_version}
+ARG cargo_mdbook_version=0.4.37
+RUN cargo install mdbook --locked --version ${cargo_mdbook_version}
 
 FROM install_rust AS cargo_mdbook_mermaid
-ARG cargo_mdbook_mermaid_version=0.12.6
-ARG rust_nightly_version
-RUN cargo +${rust_nightly_version} -Z sparse-registry install mdbook-mermaid --locked --version ${cargo_mdbook_mermaid_version}
+ARG cargo_mdbook_mermaid_version=0.13.0
+RUN cargo install mdbook-mermaid --locked --version ${cargo_mdbook_mermaid_version}
 
 #
 # Final image
@@ -161,19 +160,24 @@ RUN set -eux; \
         gcc \
         git \
         glibc-langpack-en \
-        java-11-amazon-corretto-headless \
+        go \
+        java-17-amazon-corretto-headless \
         make \
         openssl-devel \
         pkgconfig \
         python3 \
         python3-devel \
         python3-pip \
-        shadow-utils; \
+        shadow-utils \
+        cmake \
+        tar \
+        unzip; \
     yum clean all; \
     rm -rf /var/cache/yum; \
     groupadd build; \
     useradd -m -g build build; \
     chmod 775 /home/build;
+RUN set -eux; cd /tmp; curl 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o awscliv2.zip && unzip awscliv2.zip && ./aws/install
 COPY --chown=build:build --from=local_tools /opt/cargo /opt/cargo
 COPY --chown=build:build --from=cargo_deny /opt/cargo/bin/cargo-deny /opt/cargo/bin/cargo-deny
 COPY --chown=build:build --from=cargo_udeps /opt/cargo/bin/cargo-udeps /opt/cargo/bin/cargo-udeps
@@ -182,23 +186,21 @@ COPY --chown=build:build --from=cargo_minimal_versions /opt/cargo/bin/cargo-mini
 COPY --chown=build:build --from=cargo_check_external_types /opt/cargo/bin/cargo-check-external-types /opt/cargo/bin/cargo-check-external-types
 COPY --chown=build:build --from=maturin /opt/cargo/bin/maturin /opt/cargo/bin/maturin
 COPY --chown=build:build --from=wasm_pack /opt/cargo/bin/wasm-pack /opt/cargo/bin/wasm-pack
-COPY --chown=build:build --from=wasmtime /opt/wasmtime /opt/cargo/bin/wasmtime
-COPY --chown=build:build --from=cargo_wasi /opt/cargo/bin/cargo-wasi /opt/cargo/bin/cargo-wasi
+COPY --chown=build:build --from=wasmtime /opt/cargo/bin/wasmtime /opt/cargo/bin/wasmtime
+COPY --chown=build:build --from=cargo_component /opt/cargo/bin/cargo-component /opt/cargo/bin/cargo-component
 COPY --chown=build:build --from=install_rust /opt/rustup /opt/rustup
 COPY --chown=build:build --from=cargo_semver_checks /opt/cargo/bin/cargo-semver-checks /opt/cargo/bin/cargo-semver-checks
 COPY --chown=build:build --from=cargo_mdbook /opt/cargo/bin/mdbook /opt/cargo/bin/mdbook
 COPY --chown=build:build --from=cargo_mdbook_mermaid /opt/cargo/bin/mdbook-mermaid /opt/cargo/bin/mdbook-mermaid
 COPY --chown=build:build --from=musl_toolchain /usr/local/musl/ /usr/local/musl/
 ENV PATH=$PATH:/usr/local/musl/bin/
-# TODO(Rust 1.70): The sparse registry config (`CARGO_REGISTRIES_CRATES_IO_PROTOCOL`) can be removed when upgrading to Rust 1.70
 ENV PATH=/opt/cargo/bin:$PATH \
     CARGO_HOME=/opt/cargo \
     RUSTUP_HOME=/opt/rustup \
-    JAVA_HOME=/usr/lib/jvm/java-11-amazon-corretto.x86_64 \
+    JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64 \
     GRADLE_USER_HOME=/home/build/.gradle \
     RUST_STABLE_VERSION=${rust_stable_version} \
     RUST_NIGHTLY_VERSION=${rust_nightly_version} \
-    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
     CARGO_INCREMENTAL=0 \
     RUSTDOCFLAGS="-D warnings" \
     RUSTFLAGS="-D warnings" \

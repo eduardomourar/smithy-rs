@@ -11,6 +11,7 @@ env:
 
 name: Verify client TLS configuration
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -18,64 +19,73 @@ on:
 jobs:
   verify-tls-config:
     name: Verify TLS configuration
-    runs-on: ubuntu-latest
+    # TODO: GH runners recently bumped the default Ubuntu version to 24.x, this comes with an upgraded OpenSSL
+    # version that causes the python oscrypto package to throw an error: https://github.com/wbond/oscrypto/issues/78
+    # Until that package is updated we are pinning the version here.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
-      - name: Install packages
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get -y install gcc make python3-pip nginx git ruby openjdk-17-jre pkg-config libssl-dev faketime
-          pip3 install certbuilder crlbuilder
-      - name: Stop nginx
-        run: sudo systemctl stop nginx
-      - name: Checkout smithy-rs
-        uses: actions/checkout@v3
-        with:
-          path: ./smithy-rs
-      - name: Checkout trytls
-        uses: actions/checkout@v3
-        with:
-          repository: ouspg/trytls
-          path: ./trytls
-      - name: Checkout badtls
-        uses: actions/checkout@v3
-        with:
-          repository: wbond/badtls.io
-          path: ./badtls.io
-      - name: Checkout badssl
-        uses: actions/checkout@v3
-        with:
-          repository: chromium/badssl.com
-          path: ./badssl.com
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.rust_version }}
-      - name: Build badssl.com
-        shell: bash
-        working-directory: badssl.com
-        env:
-          DOCKER_BUILDKIT: 1
-        run: ../smithy-rs/tools/ci-scripts/configure-tls/configure-badssl
-      - name: Build SDK
-        working-directory: smithy-rs
-        run: ./gradlew :aws:sdk:assemble -Paws.services=+sts,+sso
-      - name: Build trytls
-        shell: bash
-        working-directory: trytls
-        run: ../smithy-rs/tools/ci-scripts/configure-tls/configure-trytls
-      - name: Build badtls.io
-        working-directory: badtls.io
-        shell: bash
-        run: ../smithy-rs/tools/ci-scripts/configure-tls/configure-badtls
-      - name: Update TLS configuration
-        shell: bash
-        run: smithy-rs/tools/ci-scripts/configure-tls/update-certs
-      - name: Build TLS stub
-        working-directory: smithy-rs/tools/ci-resources/tls-stub
-        shell: bash
-        run: cargo build
-      - name: Test TLS configuration
-        working-directory: smithy-rs/tools
-        shell: bash
-        run: trytls https target/debug/stub
+    - name: Install packages
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install gcc make python3-pip nginx git ruby pkg-config libssl-dev faketime
+        pip3 install certbuilder crlbuilder
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: corretto
+        java-version: 17
+    - name: Stop nginx
+      run: sudo systemctl stop nginx
+    - name: Checkout smithy-rs
+      uses: actions/checkout@v4
+      with:
+        path: ./smithy-rs
+    - name: Checkout trytls
+      uses: actions/checkout@v4
+      with:
+        repository: ouspg/trytls
+        path: ./trytls
+    - name: Checkout badtls
+      uses: actions/checkout@v4
+      with:
+        repository: wbond/badtls.io
+        path: ./badtls.io
+    - name: Checkout badssl
+      uses: actions/checkout@v4
+      with:
+        repository: chromium/badssl.com
+        path: ./badssl.com
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.rust_version }}
+    - name: Build badssl.com
+      shell: bash
+      working-directory: badssl.com
+      env:
+        DOCKER_BUILDKIT: 1
+      run: ../smithy-rs/tools/ci-scripts/configure-tls/configure-badssl
+    - name: Build SDK
+      working-directory: smithy-rs
+      run: ./gradlew :aws:sdk:assemble -Paws.services=+sts,+sso,+ssooidc
+    - name: Build trytls
+      shell: bash
+      working-directory: trytls
+      run: ../smithy-rs/tools/ci-scripts/configure-tls/configure-trytls
+    - name: Build badtls.io
+      working-directory: badtls.io
+      shell: bash
+      run: ../smithy-rs/tools/ci-scripts/configure-tls/configure-badtls
+    - name: Update TLS configuration
+      shell: bash
+      run: smithy-rs/tools/ci-scripts/configure-tls/update-certs
+    - name: Build TLS stub
+      working-directory: smithy-rs/tools/ci-resources/tls-stub
+      shell: bash
+      run: cargo build
+    - name: Test TLS configuration
+      working-directory: smithy-rs/tools
+      shell: bash
+      run: trytls https target/debug/stub

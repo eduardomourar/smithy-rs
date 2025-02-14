@@ -6,11 +6,17 @@
 /// Smithy auth scheme implementations.
 pub mod auth;
 
-/// Built-in Smithy connectors.
+pub mod defaults;
+
+pub mod dns;
+
+pub mod endpoint;
+
+/// Built-in Smithy HTTP clients and connectors.
 ///
-/// See the [module docs in `aws-smithy-runtime-api`](aws_smithy_runtime_api::client::connectors)
-/// for more information about connectors.
-pub mod connectors;
+/// See the [module docs in `aws-smithy-runtime-api`](aws_smithy_runtime_api::client::http)
+/// for more information about clients and connectors.
+pub mod http;
 
 /// Utility to simplify config building for config and config overrides.
 pub mod config_override;
@@ -37,3 +43,13 @@ pub mod identity;
 
 /// Interceptors for Smithy clients.
 pub mod interceptors;
+
+/// Stalled stream protection for clients
+pub mod stalled_stream_protection;
+
+/// Generic Smithy SDK feature identifies.
+#[doc(hidden)]
+pub mod sdk_feature;
+
+/// Smithy support-code for code generated waiters.
+pub mod waiters;

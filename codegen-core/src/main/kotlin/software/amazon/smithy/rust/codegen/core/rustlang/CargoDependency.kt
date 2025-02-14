@@ -10,6 +10,7 @@ import software.amazon.smithy.codegen.core.SymbolDependencyContainer
 import software.amazon.smithy.rust.codegen.core.smithy.ConstrainedModule
 import software.amazon.smithy.rust.codegen.core.smithy.RuntimeConfig
 import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType
+import software.amazon.smithy.rust.codegen.core.util.PANIC
 import software.amazon.smithy.rust.codegen.core.util.dq
 import java.nio.file.Path
 
@@ -21,26 +22,37 @@ enum class DependencyScope {
 }
 
 sealed class DependencyLocation
+
 data class CratesIo(val version: String) : DependencyLocation()
+
 data class Local(val basePath: String, val version: String? = null) : DependencyLocation()
 
 sealed class RustDependency(open val name: String) : SymbolDependencyContainer {
     abstract fun version(): String
+
     open fun dependencies(): List<RustDependency> = listOf()
+
     override fun getDependencies(): List<SymbolDependency> {
         return listOf(
             SymbolDependency
                 .builder()
                 .packageName(name).version(version())
                 // We rely on retrieving the structured dependency from the symbol later
-                .putProperty(PropertyKey, this).build(),
+                .putProperty(PROPERTY_KEY, this).build(),
         ) + dependencies().flatMap { it.dependencies }
     }
 
+    open fun toDevDependency(): RustDependency =
+        when (this) {
+            is CargoDependency -> this.toDevDependency()
+            is InlineDependency -> PANIC("it does not make sense for an inline dependency to be a dev-dependency")
+        }
+
     companion object {
-        private const val PropertyKey = "rustdep"
+        private const val PROPERTY_KEY = "rustdep"
+
         fun fromSymbolDependency(symbolDependency: SymbolDependency) =
-            symbolDependency.getProperty(PropertyKey, RustDependency::class.java).get()
+            symbolDependency.getProperty(PROPERTY_KEY, RustDependency::class.java).get()
     }
 }
 
@@ -66,9 +78,7 @@ class InlineDependency(
         return renderer.hashCode().toString()
     }
 
-    override fun dependencies(): List<RustDependency> {
-        return extraDependencies
-    }
+    override fun dependencies(): List<RustDependency> = extraDependencies
 
     fun key() = "${module.fullyQualifiedPath()}::$name"
 
@@ -86,8 +96,21 @@ class InlineDependency(
             }
         }
 
-        private fun forInlineableRustFile(name: String, vararg additionalDependencies: RustDependency) =
-            forRustFile(RustModule.private(name), "/inlineable/src/$name.rs", *additionalDependencies)
+        private fun forInlineableRustFile(
+            name: String,
+            vararg additionalDependencies: RustDependency,
+        ) = forRustFile(RustModule.private(name), "/inlineable/src/$name.rs", *additionalDependencies)
+
+        fun eventReceiver(runtimeConfig: RuntimeConfig) =
+            forInlineableRustFile(
+                "event_receiver",
+                CargoDependency.smithyHttp(runtimeConfig),
+                CargoDependency.smithyRuntimeApi(runtimeConfig),
+                CargoDependency.smithyTypes(runtimeConfig),
+            )
+
+        fun defaultAuthPlugin(runtimeConfig: RuntimeConfig) =
+            forInlineableRustFile("auth_plugin", CargoDependency.smithyRuntimeApiClient(runtimeConfig))
 
         fun jsonErrors(runtimeConfig: RuntimeConfig) =
             forInlineableRustFile(
@@ -104,10 +127,31 @@ class InlineDependency(
                 CargoDependency.Http,
             )
 
+        fun clientRequestCompression(runtimeConfig: RuntimeConfig) =
+            forInlineableRustFile(
+                "client_request_compression",
+                CargoDependency.Http,
+                CargoDependency.HttpBody,
+                CargoDependency.Tracing,
+                CargoDependency.Flate2,
+                CargoDependency.Tokio.toDevDependency(),
+                CargoDependency.smithyCompression(runtimeConfig).withFeature("http-body-0-4-x"),
+                CargoDependency.smithyRuntimeApiClient(runtimeConfig),
+                CargoDependency.smithyTypes(runtimeConfig).withFeature("http-body-0-4-x"),
+            )
+
         fun idempotencyToken(runtimeConfig: RuntimeConfig) =
             forInlineableRustFile(
                 "idempotency_token",
                 CargoDependency.FastRand,
+                CargoDependency.smithyTypes(runtimeConfig),
+            )
+
+        fun cborErrors(runtimeConfig: RuntimeConfig): InlineDependency =
+            forInlineableRustFile(
+                "cbor_errors",
+                CargoDependency.smithyCbor(runtimeConfig),
+                CargoDependency.smithyRuntimeApi(runtimeConfig),
                 CargoDependency.smithyTypes(runtimeConfig),
             )
 
@@ -120,15 +164,21 @@ class InlineDependency(
         fun unwrappedXmlErrors(runtimeConfig: RuntimeConfig): InlineDependency =
             forInlineableRustFile("rest_xml_unwrapped_errors", CargoDependency.smithyXml(runtimeConfig))
 
-        fun serializationSettings(runtimeConfig: RuntimeConfig): InlineDependency = forInlineableRustFile(
-            "serialization_settings",
-            CargoDependency.Http,
-            CargoDependency.smithyHttp(runtimeConfig),
-            CargoDependency.smithyTypes(runtimeConfig),
-        )
+        fun serializationSettings(runtimeConfig: RuntimeConfig): InlineDependency =
+            forInlineableRustFile(
+                "serialization_settings",
+                CargoDependency.Http,
+                CargoDependency.smithyHttp(runtimeConfig),
+                CargoDependency.smithyTypes(runtimeConfig),
+            )
 
-        fun constrained(): InlineDependency =
-            InlineDependency.forRustFile(ConstrainedModule, "/inlineable/src/constrained.rs")
+        fun constrained(): InlineDependency = forRustFile(ConstrainedModule, "/inlineable/src/constrained.rs")
+
+        fun sdkFeatureTracker(runtimeConfig: RuntimeConfig): InlineDependency =
+            forInlineableRustFile(
+                "sdk_feature_tracker",
+                CargoDependency.smithyRuntime(runtimeConfig),
+            )
     }
 }
 
@@ -139,7 +189,7 @@ data class Feature(val name: String, val default: Boolean, val deps: List<String
 val DEV_ONLY_FEATURES = setOf("test-util")
 
 /**
- * A dependency on an internal or external Cargo Crate
+ * A dependency on an internal or external Cargo crate
  */
 data class CargoDependency(
     override val name: String,
@@ -149,6 +199,7 @@ data class CargoDependency(
     val features: Set<String> = emptySet(),
     val defaultFeatures: Boolean = true,
     val rustName: String = name.replace("-", "_"),
+    val `package`: String? = null,
 ) : RustDependency(name) {
     val key: Triple<String, DependencyLocation, DependencyScope> get() = Triple(name, location, scope)
 
@@ -162,12 +213,13 @@ data class CargoDependency(
         return copy(features = features.toMutableSet().apply { add(feature) })
     }
 
-    fun toDevDependency() = copy(scope = DependencyScope.Dev)
+    override fun toDevDependency() = copy(scope = DependencyScope.Dev)
 
-    override fun version(): String = when (location) {
-        is CratesIo -> location.version
-        is Local -> "local"
-    }
+    override fun version(): String =
+        when (location) {
+            is CratesIo -> location.version
+            is Local -> "local"
+        }
 
     fun toMap(): Map<String, Any> {
         val attribs = mutableMapOf<String, Any>()
@@ -182,7 +234,7 @@ data class CargoDependency(
             }
         }
         with(features) {
-            if (!isEmpty()) {
+            if (isNotEmpty()) {
                 attribs["features"] = this
             }
         }
@@ -191,6 +243,9 @@ data class CargoDependency(
         }
         if (!defaultFeatures) {
             attribs["default-features"] = false
+        }
+        if (`package`.isNotNullOrEmpty()) {
+            attribs["package"] = `package`.toString()
         }
         return attribs
     }
@@ -209,7 +264,7 @@ data class CargoDependency(
             )
         }
         with(features) {
-            if (!isEmpty()) {
+            if (isNotEmpty()) {
                 attribs.add("features = [${joinToString(",") { it.dq() }}]")
             }
         }
@@ -217,42 +272,43 @@ data class CargoDependency(
         return "$name = { ${attribs.joinToString(", ")} }"
     }
 
-    fun toType(): RuntimeType {
-        return RuntimeType("::$rustName", this)
-    }
+    fun toType() = RuntimeType("::$rustName", this)
 
     companion object {
-        val OnceCell: CargoDependency = CargoDependency("once_cell", CratesIo("1.16"))
-        val Url: CargoDependency = CargoDependency("url", CratesIo("2.3.1"))
-        val Bytes: CargoDependency = CargoDependency("bytes", CratesIo("1.0.0"))
+        val Bytes: CargoDependency = CargoDependency("bytes", CratesIo("1.4.0"))
         val BytesUtils: CargoDependency = CargoDependency("bytes-utils", CratesIo("0.1.0"))
         val FastRand: CargoDependency = CargoDependency("fastrand", CratesIo("2.0.0"))
+        val Flate2: CargoDependency = CargoDependency("flate2", CratesIo("1.0.30"))
         val Hex: CargoDependency = CargoDependency("hex", CratesIo("0.4.3"))
-        val Http: CargoDependency = CargoDependency("http", CratesIo("0.2.9"))
-        val HttpBody: CargoDependency = CargoDependency("http-body", CratesIo("0.4.4"))
-        val Hyper: CargoDependency = CargoDependency("hyper", CratesIo("0.14.26"))
-        val HyperWithStream: CargoDependency = Hyper.withFeature("stream")
+        val Hmac: CargoDependency = CargoDependency("hmac", CratesIo("0.12"))
         val LazyStatic: CargoDependency = CargoDependency("lazy_static", CratesIo("1.4.0"))
+        val Lru: CargoDependency = CargoDependency("lru", CratesIo("0.12.2"))
         val Md5: CargoDependency = CargoDependency("md-5", CratesIo("0.10.0"), rustName = "md5")
+        val OnceCell: CargoDependency = CargoDependency("once_cell", CratesIo("1.16"))
         val PercentEncoding: CargoDependency = CargoDependency("percent-encoding", CratesIo("2.0.0"))
         val Regex: CargoDependency = CargoDependency("regex", CratesIo("1.5.5"))
-        val Ring: CargoDependency = CargoDependency("ring", CratesIo("0.16.0"))
+        val RegexLite: CargoDependency = CargoDependency("regex-lite", CratesIo("0.1.5"))
+        val Ring: CargoDependency = CargoDependency("ring", CratesIo("0.17.5"))
+        val Sha2: CargoDependency = CargoDependency("sha2", CratesIo("0.10"))
         val TokioStream: CargoDependency = CargoDependency("tokio-stream", CratesIo("0.1.7"))
         val Tower: CargoDependency = CargoDependency("tower", CratesIo("0.4"))
         val Tracing: CargoDependency = CargoDependency("tracing", CratesIo("0.1"))
+        val Url: CargoDependency = CargoDependency("url", CratesIo("2.3.1"))
 
         // Test-only dependencies
         val Approx: CargoDependency = CargoDependency("approx", CratesIo("0.5.1"), DependencyScope.Dev)
         val AsyncStd: CargoDependency = CargoDependency("async-std", CratesIo("1.12.0"), DependencyScope.Dev)
         val AsyncStream: CargoDependency = CargoDependency("async-stream", CratesIo("0.3.0"), DependencyScope.Dev)
-        val Criterion: CargoDependency = CargoDependency("criterion", CratesIo("0.4.0"), DependencyScope.Dev)
+        val Ciborium: CargoDependency = CargoDependency("ciborium", CratesIo("0.2"), DependencyScope.Dev)
+        val Criterion: CargoDependency = CargoDependency("criterion", CratesIo("0.5.0"), DependencyScope.Dev)
         val FuturesCore: CargoDependency = CargoDependency("futures-core", CratesIo("0.3.25"), DependencyScope.Dev)
         val FuturesUtil: CargoDependency =
-            CargoDependency("futures-util", CratesIo("0.3.25"), DependencyScope.Dev, defaultFeatures = false)
+            CargoDependency("futures-util", CratesIo("0.3.25"), DependencyScope.Dev, defaultFeatures = false, features = setOf("alloc"))
         val HdrHistogram: CargoDependency = CargoDependency("hdrhistogram", CratesIo("7.5.2"), DependencyScope.Dev)
         val Hound: CargoDependency = CargoDependency("hound", CratesIo("3.4.0"), DependencyScope.Dev)
         val PrettyAssertions: CargoDependency =
             CargoDependency("pretty_assertions", CratesIo("1.3.0"), DependencyScope.Dev)
+        val Proptest: CargoDependency = CargoDependency("proptest", CratesIo("1"), DependencyScope.Dev)
         val SerdeJson: CargoDependency = CargoDependency("serde_json", CratesIo("1.0.0"), DependencyScope.Dev)
         val Smol: CargoDependency = CargoDependency("smol", CratesIo("1.2.0"), DependencyScope.Dev)
         val TempFile: CargoDependency = CargoDependency("tempfile", CratesIo("3.2.0"), DependencyScope.Dev)
@@ -263,49 +319,84 @@ data class CargoDependency(
                 DependencyScope.Dev,
                 features = setOf("macros", "test-util", "rt-multi-thread"),
             )
-        val TracingAppender: CargoDependency = CargoDependency(
-            "tracing-appender",
-            CratesIo("0.2.2"),
-            DependencyScope.Dev,
-        )
-        val TracingSubscriber: CargoDependency = CargoDependency(
-            "tracing-subscriber",
-            CratesIo("0.3.16"),
-            DependencyScope.Dev,
-            features = setOf("env-filter", "json"),
-        )
-        val TracingTest: CargoDependency = CargoDependency(
-            "tracing-test",
-            CratesIo("0.2.4"),
-            DependencyScope.Dev,
-            features = setOf("no-env-filter"),
-        )
+        val TracingAppender: CargoDependency =
+            CargoDependency(
+                "tracing-appender",
+                CratesIo("0.2.2"),
+                DependencyScope.Dev,
+            )
+        val TracingSubscriber: CargoDependency =
+            CargoDependency(
+                "tracing-subscriber",
+                CratesIo("0.3.16"),
+                DependencyScope.Dev,
+                features = setOf("env-filter", "json"),
+            )
+        val TracingTest: CargoDependency =
+            CargoDependency(
+                "tracing-test",
+                CratesIo("0.2.5"),
+                DependencyScope.Dev,
+                features = setOf("no-env-filter"),
+            )
+
+        // Hyper 0.x types
+        val Http: CargoDependency = CargoDependency("http", CratesIo("0.2.9"))
+        val HttpBody: CargoDependency = CargoDependency("http-body", CratesIo("0.4.4"))
+        val Hyper: CargoDependency = CargoDependency("hyper", CratesIo("0.14.26"))
+        val HyperWithStream: CargoDependency = Hyper.withFeature("stream")
+
+        // Hyper 1.x types
+        val Http1x: CargoDependency = CargoDependency("http-1x", CratesIo("1"), `package` = "http", optional = true)
+        val HttpBody1x: CargoDependency =
+            CargoDependency("http-body-1x", CratesIo("1"), `package` = "http-body", optional = true)
 
         fun smithyAsync(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-async")
+
+        fun smithyCbor(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-cbor")
+
         fun smithyChecksums(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-checksums")
-        fun smithyClient(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-client")
-        fun smithyClientTestUtil(runtimeConfig: RuntimeConfig) =
-            smithyClient(runtimeConfig).toDevDependency().withFeature("test-util")
+
+        fun smithyCompression(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-compression")
 
         fun smithyEventStream(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-eventstream")
+
         fun smithyHttp(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-http")
-        fun smithyHttpAuth(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-http-auth")
-        fun smithyHttpTower(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-http-tower")
+
         fun smithyJson(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-json")
+
         fun smithyProtocolTestHelpers(runtimeConfig: RuntimeConfig) =
             runtimeConfig.smithyRuntimeCrate("smithy-protocol-test", scope = DependencyScope.Dev)
 
         fun smithyQuery(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-query")
-        fun smithyRuntime(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-runtime")
-            .withFeature("client")
+
+        fun smithyRuntime(runtimeConfig: RuntimeConfig) =
+            runtimeConfig.smithyRuntimeCrate("smithy-runtime")
+                .withFeature("client")
+
+        fun smithyExperimental(runtimeConfig: RuntimeConfig) =
+            runtimeConfig.smithyRuntimeCrate("smithy-experimental")
+                .withFeature("crypto-ring")
+
+        fun smithyRuntimeTestUtil(runtimeConfig: RuntimeConfig) =
+            smithyRuntime(runtimeConfig).toDevDependency().withFeature("test-util")
+
         fun smithyRuntimeApi(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-runtime-api")
-            .withFeature("client")
+
+        fun smithyRuntimeApiClient(runtimeConfig: RuntimeConfig) =
+            smithyRuntimeApi(runtimeConfig).withFeature("client").withFeature("http-02x")
+
         fun smithyRuntimeApiTestUtil(runtimeConfig: RuntimeConfig) =
             smithyRuntimeApi(runtimeConfig).toDevDependency().withFeature("test-util")
+
         fun smithyTypes(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-types")
+
         fun smithyXml(runtimeConfig: RuntimeConfig) = runtimeConfig.smithyRuntimeCrate("smithy-xml")
 
         // behind feature-gate
-        val Serde = CargoDependency("serde", CratesIo("1.0"), features = setOf("derive"), scope = DependencyScope.CfgUnstable)
+        val Serde =
+            CargoDependency("serde", CratesIo("1.0"), features = setOf("derive"), scope = DependencyScope.CfgUnstable)
     }
 }
+
+private fun String?.isNotNullOrEmpty(): Boolean = !this.isNullOrEmpty()

@@ -32,9 +32,9 @@ class InvocationIdDecoratorTest {
                             }
                         }
 
-                        let (conn, rx) = #{capture_request}(None);
+                        let (http_client, rx) = #{capture_request}(None);
                         let config = $moduleName::Config::builder()
-                            .http_connector(conn)
+                            .http_client(http_client)
                             .invocation_id_generator(TestIdGen)
                             .build();
                         assert!(config.invocation_id_generator().is_some());
@@ -48,10 +48,12 @@ class InvocationIdDecoratorTest {
                     """,
                     *preludeScope,
                     "tokio" to CargoDependency.Tokio.toType(),
-                    "InvocationIdGenerator" to AwsRuntimeType.awsRuntime(rc)
-                        .resolve("invocation_id::InvocationIdGenerator"),
-                    "InvocationId" to AwsRuntimeType.awsRuntime(rc)
-                        .resolve("invocation_id::InvocationId"),
+                    "InvocationIdGenerator" to
+                        AwsRuntimeType.awsRuntime(rc)
+                            .resolve("invocation_id::InvocationIdGenerator"),
+                    "InvocationId" to
+                        AwsRuntimeType.awsRuntime(rc)
+                            .resolve("invocation_id::InvocationId"),
                     "BoxError" to RuntimeType.boxError(rc),
                     "capture_request" to RuntimeType.captureRequest(rc),
                 )

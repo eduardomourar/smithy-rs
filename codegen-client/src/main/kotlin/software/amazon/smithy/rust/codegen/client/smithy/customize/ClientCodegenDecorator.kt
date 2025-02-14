@@ -16,7 +16,6 @@ import software.amazon.smithy.rust.codegen.client.smithy.generators.OperationGen
 import software.amazon.smithy.rust.codegen.client.smithy.generators.ServiceRuntimePluginCustomization
 import software.amazon.smithy.rust.codegen.client.smithy.generators.config.ConfigCustomization
 import software.amazon.smithy.rust.codegen.client.smithy.generators.error.ErrorCustomization
-import software.amazon.smithy.rust.codegen.client.smithy.generators.protocol.ProtocolTestGenerator
 import software.amazon.smithy.rust.codegen.core.rustlang.Writable
 import software.amazon.smithy.rust.codegen.core.smithy.customize.CombinedCoreCodegenDecorator
 import software.amazon.smithy.rust.codegen.core.smithy.customize.CoreCodegenDecorator
@@ -30,10 +29,12 @@ sealed interface AuthSchemeOption {
     /** Auth scheme for the `StaticAuthSchemeOptionResolver` */
     data class StaticAuthSchemeOption(
         val schemeShapeId: ShapeId,
-        val constructor: Writable,
+        val constructor: List<Writable>,
     ) : AuthSchemeOption
 
-    class CustomResolver(/* unimplemented */) : AuthSchemeOption
+    class CustomResolver(
+        // unimplemented
+    ) : AuthSchemeOption
 }
 
 /**
@@ -69,14 +70,20 @@ interface ClientCodegenDecorator : CoreCodegenDecorator<ClientCodegenContext, Cl
         baseCustomizations: List<ErrorCustomization>,
     ): List<ErrorCustomization> = baseCustomizations
 
-    fun protocols(serviceId: ShapeId, currentProtocols: ClientProtocolMap): ClientProtocolMap = currentProtocols
+    fun protocols(
+        serviceId: ShapeId,
+        currentProtocols: ClientProtocolMap,
+    ): ClientProtocolMap = currentProtocols
 
     fun endpointCustomizations(codegenContext: ClientCodegenContext): List<EndpointCustomization> = listOf()
 
     /**
      * Hook to customize client construction documentation.
      */
-    fun clientConstructionDocs(codegenContext: ClientCodegenContext, baseDocs: Writable): Writable = baseDocs
+    fun clientConstructionDocs(
+        codegenContext: ClientCodegenContext,
+        baseDocs: Writable,
+    ): Writable = baseDocs
 
     /**
      * Hooks to register additional service-level runtime plugins at codegen time
@@ -85,14 +92,6 @@ interface ClientCodegenDecorator : CoreCodegenDecorator<ClientCodegenContext, Cl
         codegenContext: ClientCodegenContext,
         baseCustomizations: List<ServiceRuntimePluginCustomization>,
     ): List<ServiceRuntimePluginCustomization> = baseCustomizations
-
-    /**
-     * Hook to override the protocol test generator
-     */
-    fun protocolTestGenerator(
-        codegenContext: ClientCodegenContext,
-        baseGenerator: ProtocolTestGenerator,
-    ): ProtocolTestGenerator = baseGenerator
 }
 
 /**
@@ -111,33 +110,40 @@ open class CombinedClientCodegenDecorator(decorators: List<ClientCodegenDecorato
         codegenContext: ClientCodegenContext,
         operationShape: OperationShape,
         baseAuthSchemeOptions: List<AuthSchemeOption>,
-    ): List<AuthSchemeOption> = combineCustomizations(baseAuthSchemeOptions) { decorator, authOptions ->
-        decorator.authOptions(codegenContext, operationShape, authOptions)
-    }
+    ): List<AuthSchemeOption> =
+        combineCustomizations(baseAuthSchemeOptions) { decorator, authOptions ->
+            decorator.authOptions(codegenContext, operationShape, authOptions)
+        }
 
     override fun configCustomizations(
         codegenContext: ClientCodegenContext,
         baseCustomizations: List<ConfigCustomization>,
-    ): List<ConfigCustomization> = combineCustomizations(baseCustomizations) { decorator, customizations ->
-        decorator.configCustomizations(codegenContext, customizations)
-    }
+    ): List<ConfigCustomization> =
+        combineCustomizations(baseCustomizations) { decorator, customizations ->
+            decorator.configCustomizations(codegenContext, customizations)
+        }
 
     override fun operationCustomizations(
         codegenContext: ClientCodegenContext,
         operation: OperationShape,
         baseCustomizations: List<OperationCustomization>,
-    ): List<OperationCustomization> = combineCustomizations(baseCustomizations) { decorator, customizations ->
-        decorator.operationCustomizations(codegenContext, operation, customizations)
-    }
+    ): List<OperationCustomization> =
+        combineCustomizations(baseCustomizations) { decorator, customizations ->
+            decorator.operationCustomizations(codegenContext, operation, customizations)
+        }
 
     override fun errorCustomizations(
         codegenContext: ClientCodegenContext,
         baseCustomizations: List<ErrorCustomization>,
-    ): List<ErrorCustomization> = combineCustomizations(baseCustomizations) { decorator, customizations ->
-        decorator.errorCustomizations(codegenContext, customizations)
-    }
+    ): List<ErrorCustomization> =
+        combineCustomizations(baseCustomizations) { decorator, customizations ->
+            decorator.errorCustomizations(codegenContext, customizations)
+        }
 
-    override fun protocols(serviceId: ShapeId, currentProtocols: ClientProtocolMap): ClientProtocolMap =
+    override fun protocols(
+        serviceId: ShapeId,
+        currentProtocols: ClientProtocolMap,
+    ): ClientProtocolMap =
         combineCustomizations(currentProtocols) { decorator, protocolMap ->
             decorator.protocols(serviceId, protocolMap)
         }
@@ -145,7 +151,10 @@ open class CombinedClientCodegenDecorator(decorators: List<ClientCodegenDecorato
     override fun endpointCustomizations(codegenContext: ClientCodegenContext): List<EndpointCustomization> =
         addCustomizations { decorator -> decorator.endpointCustomizations(codegenContext) }
 
-    override fun clientConstructionDocs(codegenContext: ClientCodegenContext, baseDocs: Writable): Writable =
+    override fun clientConstructionDocs(
+        codegenContext: ClientCodegenContext,
+        baseDocs: Writable,
+    ): Writable =
         combineCustomizations(baseDocs) { decorator, customizations ->
             decorator.clientConstructionDocs(codegenContext, customizations)
         }
@@ -158,29 +167,24 @@ open class CombinedClientCodegenDecorator(decorators: List<ClientCodegenDecorato
             decorator.serviceRuntimePluginCustomizations(codegenContext, customizations)
         }
 
-    override fun protocolTestGenerator(
-        codegenContext: ClientCodegenContext,
-        baseGenerator: ProtocolTestGenerator,
-    ): ProtocolTestGenerator = combineCustomizations(baseGenerator) { decorator, gen ->
-        decorator.protocolTestGenerator(codegenContext, gen)
-    }
-
     companion object {
         fun fromClasspath(
             context: PluginContext,
             vararg extras: ClientCodegenDecorator,
             logger: Logger = Logger.getLogger("RustClientCodegenSPILoader"),
         ): CombinedClientCodegenDecorator {
-            val decorators = ServiceLoader.load(
-                ClientCodegenDecorator::class.java,
-                context.pluginClassLoader.orElse(ClientCodegenDecorator::class.java.classLoader),
-            )
+            val decorators =
+                ServiceLoader.load(
+                    ClientCodegenDecorator::class.java,
+                    context.pluginClassLoader.orElse(ClientCodegenDecorator::class.java.classLoader),
+                )
 
-            val filteredDecorators = decorators.asSequence()
-                .onEach { logger.info("Discovered Codegen Decorator: ${it.javaClass.name}") }
-                .filter { it.classpathDiscoverable() }
-                .onEach { logger.info("Adding Codegen Decorator: ${it.javaClass.name}") }
-                .toList()
+            val filteredDecorators =
+                decorators.asSequence()
+                    .onEach { logger.info("Discovered Codegen Decorator: ${it.javaClass.name}") }
+                    .filter { it.classpathDiscoverable() }
+                    .onEach { logger.info("Adding Codegen Decorator: ${it.javaClass.name}") }
+                    .toList()
             return CombinedClientCodegenDecorator(filteredDecorators + extras)
         }
     }

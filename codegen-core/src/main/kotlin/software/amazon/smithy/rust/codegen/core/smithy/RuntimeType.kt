@@ -5,7 +5,6 @@
 
 package software.amazon.smithy.rust.codegen.core.smithy
 
-import software.amazon.smithy.codegen.core.CodegenException
 import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.model.node.Node
 import software.amazon.smithy.model.node.ObjectNode
@@ -27,8 +26,6 @@ import software.amazon.smithy.rust.codegen.core.rustlang.writable
 import software.amazon.smithy.rust.codegen.core.util.orNull
 import java.util.Optional
 
-private const val DEFAULT_KEY = "DEFAULT"
-
 /**
  * Location of the runtime crates (aws-smithy-http, aws-smithy-types etc.)
  *
@@ -36,25 +33,20 @@ private const val DEFAULT_KEY = "DEFAULT"
  */
 data class RuntimeCrateLocation(val path: String?, val versions: CrateVersionMap) {
     companion object {
-        fun Path(path: String) = RuntimeCrateLocation(path, CrateVersionMap(emptyMap()))
+        fun path(path: String) = RuntimeCrateLocation(path, CrateVersionMap(emptyMap()))
     }
 }
 
-fun RuntimeCrateLocation.crateLocation(crateName: String?): DependencyLocation {
-    val version = crateName.let { versions.map[crateName] } ?: versions.map[DEFAULT_KEY]
+fun RuntimeCrateLocation.crateLocation(crateName: String): DependencyLocation {
+    val version =
+        crateName.let {
+            versions.map[crateName]
+        } ?: Version.crateVersion(crateName)
     return when (this.path) {
         // CratesIo needs an exact version. However, for local runtime crates we do not
         // provide a detected version unless the user explicitly sets one via the `versions` map.
-        null -> CratesIo(version ?: defaultRuntimeCrateVersion())
-        else -> Local(this.path, version)
-    }
-}
-
-fun defaultRuntimeCrateVersion(): String {
-    try {
-        return Version.crateVersion()
-    } catch (ex: Exception) {
-        throw CodegenException("failed to get crate version which sets the default client-runtime version", ex)
+        null -> CratesIo(version)
+        else -> Local(this.path)
     }
 }
 
@@ -71,10 +63,9 @@ value class CrateVersionMap(
  */
 data class RuntimeConfig(
     val cratePrefix: String = "aws",
-    val runtimeCrateLocation: RuntimeCrateLocation = RuntimeCrateLocation.Path("../"),
+    val runtimeCrateLocation: RuntimeCrateLocation = RuntimeCrateLocation.path("../"),
 ) {
     companion object {
-
         /**
          * Load a `RuntimeConfig` from an [ObjectNode] (JSON)
          */
@@ -93,10 +84,6 @@ data class RuntimeConfig(
             )
         }
     }
-
-    val crateSrcPrefix: String = cratePrefix.replace("-", "_")
-
-    fun runtimeCratesPath(): String? = runtimeCrateLocation.path
 
     fun smithyRuntimeCrate(
         runtimeCrateName: String,
@@ -146,12 +133,15 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
     /**
      * Get a writable for this `RuntimeType`
      */
-    val writable = writable {
-        rustInlineTemplate(
-            "#{this:T}",
-            "this" to this@RuntimeType,
-        )
-    }
+    val writable =
+        writable {
+            rustInlineTemplate(
+                "#{this:T}",
+                "this" to this@RuntimeType,
+            )
+        }
+
+    fun toDevDependencyType(): RuntimeType = copy(dependency = dependency?.toDevDependency())
 
     /**
      * Convert this [RuntimeType] into a [Symbol].
@@ -160,11 +150,12 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
      * (e.g. when bringing a trait into scope). See [CodegenWriter.addUseImports].
      */
     fun toSymbol(): Symbol {
-        val builder = Symbol
-            .builder()
-            .name(name)
-            .namespace(namespace, "::")
-            .rustType(RustType.Opaque(name, namespace))
+        val builder =
+            Symbol
+                .builder()
+                .name(name)
+                .namespace(namespace, "::")
+                .rustType(RustType.Opaque(name, namespace))
 
         dependency?.run { builder.addDependency(this) }
         return builder.build()
@@ -178,9 +169,7 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
      * val http = CargoDependency.http.resolve("Request")
      * ```
      */
-    fun resolve(subPath: String): RuntimeType {
-        return copy(path = "$path::$subPath")
-    }
+    fun resolve(subPath: String): RuntimeType = copy(path = "$path::$subPath")
 
     /**
      * Returns the fully qualified name for this type
@@ -242,7 +231,6 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
                 "String" to String,
                 "ToString" to std.resolve("string::ToString"),
                 "Vec" to Vec,
-
                 // 2021 Edition
                 "TryFrom" to std.resolve("convert::TryFrom"),
                 "TryInto" to std.resolve("convert::TryInto"),
@@ -265,6 +253,7 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
         val Debug = stdFmt.resolve("Debug")
         val Default = std.resolve("default::Default")
         val Display = stdFmt.resolve("Display")
+        val Duration = std.resolve("time::Duration")
         val Eq = stdCmp.resolve("Eq")
         val From = stdConvert.resolve("From")
         val Hash = std.resolve("hash::Hash")
@@ -283,54 +272,63 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
         val U64 = std.resolve("primitive::u64")
         val Vec = std.resolve("vec::Vec")
 
+        // primitive types
+        val StaticStr = RuntimeType("&'static str")
+
         // external cargo dependency types
         val Bytes = CargoDependency.Bytes.toType().resolve("Bytes")
         val Http = CargoDependency.Http.toType()
         val HttpBody = CargoDependency.HttpBody.toType()
-        val HttpHeaderMap = Http.resolve("HeaderMap")
         val HttpRequest = Http.resolve("Request")
         val HttpRequestBuilder = Http.resolve("request::Builder")
         val HttpResponse = Http.resolve("Response")
         val HttpResponseBuilder = Http.resolve("response::Builder")
         val Hyper = CargoDependency.Hyper.toType()
         val LazyStatic = CargoDependency.LazyStatic.toType()
-        val Md5 = CargoDependency.Md5.toType()
         val OnceCell = CargoDependency.OnceCell.toType()
         val PercentEncoding = CargoDependency.PercentEncoding.toType()
         val PrettyAssertions = CargoDependency.PrettyAssertions.toType()
         val Regex = CargoDependency.Regex.toType()
+        val Serde = CargoDependency.Serde.toType()
+        val SerdeDeserialize = Serde.resolve("Deserialize")
+        val SerdeSerialize = Serde.resolve("Serialize")
         val Tokio = CargoDependency.Tokio.toType()
         val TokioStream = CargoDependency.TokioStream.toType()
         val Tower = CargoDependency.Tower.toType()
         val Tracing = CargoDependency.Tracing.toType()
         val TracingTest = CargoDependency.TracingTest.toType()
+        val TracingSubscriber = CargoDependency.TracingSubscriber.toType()
 
         // codegen types
         val ConstrainedTrait = RuntimeType("crate::constrained::Constrained", InlineDependency.constrained())
         val MaybeConstrained = RuntimeType("crate::constrained::MaybeConstrained", InlineDependency.constrained())
 
-        // serde types. Gated behind `CfgUnstable`.
-        val Serde = CargoDependency.Serde.toType()
-        val SerdeSerialize = Serde.resolve("Serialize")
-        val SerdeDeserialize = Serde.resolve("Deserialize")
-
         // smithy runtime types
         fun smithyAsync(runtimeConfig: RuntimeConfig) = CargoDependency.smithyAsync(runtimeConfig).toType()
+
+        fun smithyCbor(runtimeConfig: RuntimeConfig) = CargoDependency.smithyCbor(runtimeConfig).toType()
+
         fun smithyChecksums(runtimeConfig: RuntimeConfig) = CargoDependency.smithyChecksums(runtimeConfig).toType()
-        fun smithyClient(runtimeConfig: RuntimeConfig) = CargoDependency.smithyClient(runtimeConfig).toType()
-        fun smithyClientTestUtil(runtimeConfig: RuntimeConfig) = CargoDependency.smithyClient(runtimeConfig)
-            .copy(features = setOf("test-util"), scope = DependencyScope.Dev).toType()
 
         fun smithyEventStream(runtimeConfig: RuntimeConfig) = CargoDependency.smithyEventStream(runtimeConfig).toType()
+
         fun smithyHttp(runtimeConfig: RuntimeConfig) = CargoDependency.smithyHttp(runtimeConfig).toType()
-        fun smithyHttpAuth(runtimeConfig: RuntimeConfig) = CargoDependency.smithyHttpAuth(runtimeConfig).toType()
-        fun smithyHttpTower(runtimeConfig: RuntimeConfig) = CargoDependency.smithyHttpTower(runtimeConfig).toType()
+
         fun smithyJson(runtimeConfig: RuntimeConfig) = CargoDependency.smithyJson(runtimeConfig).toType()
+
         fun smithyQuery(runtimeConfig: RuntimeConfig) = CargoDependency.smithyQuery(runtimeConfig).toType()
+
         fun smithyRuntime(runtimeConfig: RuntimeConfig) = CargoDependency.smithyRuntime(runtimeConfig).toType()
+
         fun smithyRuntimeApi(runtimeConfig: RuntimeConfig) = CargoDependency.smithyRuntimeApi(runtimeConfig).toType()
+
+        fun smithyRuntimeApiClient(runtimeConfig: RuntimeConfig) =
+            CargoDependency.smithyRuntimeApiClient(runtimeConfig).toType()
+
         fun smithyTypes(runtimeConfig: RuntimeConfig) = CargoDependency.smithyTypes(runtimeConfig).toType()
+
         fun smithyXml(runtimeConfig: RuntimeConfig) = CargoDependency.smithyXml(runtimeConfig).toType()
+
         private fun smithyProtocolTest(runtimeConfig: RuntimeConfig) =
             CargoDependency.smithyProtocolTestHelpers(runtimeConfig).toType()
 
@@ -345,117 +343,141 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
             smithyTypes(runtimeConfig).resolve("config_bag::ConfigBag")
 
         fun runtimeComponents(runtimeConfig: RuntimeConfig) =
-            smithyRuntimeApi(runtimeConfig).resolve("client::runtime_components::RuntimeComponents")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::runtime_components::RuntimeComponents")
 
         fun runtimeComponentsBuilder(runtimeConfig: RuntimeConfig) =
-            smithyRuntimeApi(runtimeConfig).resolve("client::runtime_components::RuntimeComponentsBuilder")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::runtime_components::RuntimeComponentsBuilder")
 
         fun runtimePlugins(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::runtime_plugin::RuntimePlugins")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::runtime_plugin::RuntimePlugins")
 
         fun runtimePlugin(runtimeConfig: RuntimeConfig) =
-            smithyRuntimeApi(runtimeConfig).resolve("client::runtime_plugin::RuntimePlugin")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::runtime_plugin::RuntimePlugin")
 
         fun sharedRuntimePlugin(runtimeConfig: RuntimeConfig) =
-            smithyRuntimeApi(runtimeConfig).resolve("client::runtime_plugin::SharedRuntimePlugin")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::runtime_plugin::SharedRuntimePlugin")
 
         fun boxError(runtimeConfig: RuntimeConfig): RuntimeType =
             smithyRuntimeApi(runtimeConfig).resolve("box_error::BoxError")
 
-        fun interceptor(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::Interceptor")
+        fun sdkError(runtimeConfig: RuntimeConfig): RuntimeType =
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::result::SdkError")
+
+        fun intercept(runtimeConfig: RuntimeConfig): RuntimeType =
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::Intercept")
 
         fun interceptorContext(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::InterceptorContext")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::InterceptorContext")
 
         fun sharedInterceptor(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::SharedInterceptor")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::SharedInterceptor")
 
         fun afterDeserializationInterceptorContextRef(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::AfterDeserializationInterceptorContextRef")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::AfterDeserializationInterceptorContextRef")
 
         fun beforeSerializationInterceptorContextRef(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::BeforeSerializationInterceptorContextRef")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::BeforeSerializationInterceptorContextRef")
 
         fun beforeSerializationInterceptorContextMut(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::BeforeSerializationInterceptorContextMut")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::BeforeSerializationInterceptorContextMut")
 
         fun beforeDeserializationInterceptorContextRef(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::BeforeDeserializationInterceptorContextRef")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::BeforeDeserializationInterceptorContextRef")
 
         fun beforeDeserializationInterceptorContextMut(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::BeforeDeserializationInterceptorContextMut")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::BeforeDeserializationInterceptorContextMut")
 
         fun beforeTransmitInterceptorContextRef(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::BeforeTransmitInterceptorContextRef")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::BeforeTransmitInterceptorContextRef")
 
         fun beforeTransmitInterceptorContextMut(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::BeforeTransmitInterceptorContextMut")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::BeforeTransmitInterceptorContextMut")
 
         fun finalizerInterceptorContextRef(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::FinalizerInterceptorContextRef")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::FinalizerInterceptorContextRef")
 
         fun finalizerInterceptorContextMut(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyRuntimeApi(runtimeConfig).resolve("client::interceptors::context::FinalizerInterceptorContextMut")
+            smithyRuntimeApiClient(runtimeConfig).resolve("client::interceptors::context::FinalizerInterceptorContextMut")
+
+        fun headers(runtimeConfig: RuntimeConfig): RuntimeType =
+            smithyRuntimeApi(runtimeConfig).resolve("http::Headers")
 
         fun blob(runtimeConfig: RuntimeConfig) = smithyTypes(runtimeConfig).resolve("Blob")
-        fun byteStream(runtimeConfig: RuntimeConfig) = smithyHttp(runtimeConfig).resolve("byte_stream::ByteStream")
-        fun classifyRetry(runtimeConfig: RuntimeConfig) = smithyHttp(runtimeConfig).resolve("retry::ClassifyRetry")
+
+        fun byteStream(runtimeConfig: RuntimeConfig) = smithyTypes(runtimeConfig).resolve("byte_stream::ByteStream")
+
         fun dateTime(runtimeConfig: RuntimeConfig) = smithyTypes(runtimeConfig).resolve("DateTime")
+
         fun document(runtimeConfig: RuntimeConfig): RuntimeType = smithyTypes(runtimeConfig).resolve("Document")
+
         fun format(runtimeConfig: RuntimeConfig) = smithyTypes(runtimeConfig).resolve("date_time::Format")
+
         fun retryErrorKind(runtimeConfig: RuntimeConfig) = smithyTypes(runtimeConfig).resolve("retry::ErrorKind")
+
         fun eventStreamReceiver(runtimeConfig: RuntimeConfig): RuntimeType =
             smithyHttp(runtimeConfig).resolve("event_stream::Receiver")
+
+        fun eventReceiver(runtimeConfig: RuntimeConfig) =
+            forInlineDependency(InlineDependency.eventReceiver(runtimeConfig)).resolve("EventReceiver")
 
         fun eventStreamSender(runtimeConfig: RuntimeConfig): RuntimeType =
             smithyHttp(runtimeConfig).resolve("event_stream::EventStreamSender")
 
+        fun futuresStreamCompatByteStream(runtimeConfig: RuntimeConfig): RuntimeType =
+            smithyHttp(runtimeConfig).resolve("futures_stream_adapter::FuturesStreamCompatByteStream")
+
         fun errorMetadata(runtimeConfig: RuntimeConfig) = smithyTypes(runtimeConfig).resolve("error::ErrorMetadata")
+
         fun errorMetadataBuilder(runtimeConfig: RuntimeConfig) =
             smithyTypes(runtimeConfig).resolve("error::metadata::Builder")
 
         fun provideErrorMetadataTrait(runtimeConfig: RuntimeConfig) =
             smithyTypes(runtimeConfig).resolve("error::metadata::ProvideErrorMetadata")
 
-        fun unhandledError(runtimeConfig: RuntimeConfig) = smithyTypes(runtimeConfig).resolve("error::Unhandled")
         fun jsonErrors(runtimeConfig: RuntimeConfig) = forInlineDependency(InlineDependency.jsonErrors(runtimeConfig))
+
         fun awsQueryCompatibleErrors(runtimeConfig: RuntimeConfig) =
             forInlineDependency(InlineDependency.awsQueryCompatibleErrors(runtimeConfig))
 
-        fun labelFormat(runtimeConfig: RuntimeConfig, func: String) = smithyHttp(runtimeConfig).resolve("label::$func")
+        fun defaultAuthPlugin(runtimeConfig: RuntimeConfig) =
+            forInlineDependency(InlineDependency.defaultAuthPlugin(runtimeConfig))
+                .resolve("DefaultAuthOptionsPlugin")
+
+        fun labelFormat(
+            runtimeConfig: RuntimeConfig,
+            func: String,
+        ) = smithyHttp(runtimeConfig).resolve("label::$func")
+
         fun operation(runtimeConfig: RuntimeConfig) = smithyHttp(runtimeConfig).resolve("operation::Operation")
-        fun operationModule(runtimeConfig: RuntimeConfig) = smithyHttp(runtimeConfig).resolve("operation")
-        fun parseHttpResponse(runtimeConfig: RuntimeConfig) =
-            smithyHttp(runtimeConfig).resolve("response::ParseHttpResponse")
 
-        fun parseStrictResponse(runtimeConfig: RuntimeConfig) =
-            smithyHttp(runtimeConfig).resolve("response::ParseStrictResponse")
-
-        fun protocolTest(runtimeConfig: RuntimeConfig, func: String): RuntimeType =
-            smithyProtocolTest(runtimeConfig).resolve(func)
+        fun protocolTest(
+            runtimeConfig: RuntimeConfig,
+            func: String,
+        ): RuntimeType = smithyProtocolTest(runtimeConfig).resolve(func)
 
         fun provideErrorKind(runtimeConfig: RuntimeConfig) =
             smithyTypes(runtimeConfig).resolve("retry::ProvideErrorKind")
 
-        fun queryFormat(runtimeConfig: RuntimeConfig, func: String) = smithyHttp(runtimeConfig).resolve("query::$func")
-        fun sdkBody(runtimeConfig: RuntimeConfig): RuntimeType = smithyHttp(runtimeConfig).resolve("body::SdkBody")
-        fun sdkError(runtimeConfig: RuntimeConfig): RuntimeType = smithyHttp(runtimeConfig).resolve("result::SdkError")
-        fun sdkSuccess(runtimeConfig: RuntimeConfig): RuntimeType =
-            smithyHttp(runtimeConfig).resolve("result::SdkSuccess")
+        fun queryFormat(
+            runtimeConfig: RuntimeConfig,
+            func: String,
+        ) = smithyHttp(runtimeConfig).resolve("query::$func")
+
+        fun sdkBody(runtimeConfig: RuntimeConfig): RuntimeType = smithyTypes(runtimeConfig).resolve("body::SdkBody")
 
         fun parseTimestampFormat(
             codegenTarget: CodegenTarget,
             runtimeConfig: RuntimeConfig,
             format: TimestampFormatTrait.Format,
         ): RuntimeType {
-            val timestampFormat = when (format) {
-                TimestampFormatTrait.Format.EPOCH_SECONDS -> "EpochSeconds"
-                // clients allow offsets, servers do nt
-                TimestampFormatTrait.Format.DATE_TIME -> codegenTarget.ifClient { "DateTimeWithOffset" } ?: "DateTime"
-                TimestampFormatTrait.Format.HTTP_DATE -> "HttpDate"
-                TimestampFormatTrait.Format.UNKNOWN -> TODO()
-            }
+            val timestampFormat =
+                when (format) {
+                    TimestampFormatTrait.Format.EPOCH_SECONDS -> "EpochSeconds"
+                    // clients allow offsets, servers do nt
+                    TimestampFormatTrait.Format.DATE_TIME -> codegenTarget.ifClient { "DateTimeWithOffset" } ?: "DateTime"
+                    TimestampFormatTrait.Format.HTTP_DATE -> "HttpDate"
+                    TimestampFormatTrait.Format.UNKNOWN -> TODO()
+                }
 
             return smithyTypes(runtimeConfig).resolve("date_time::Format::$timestampFormat")
         }
@@ -464,29 +486,39 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
             runtimeConfig: RuntimeConfig,
             format: TimestampFormatTrait.Format,
         ): RuntimeType {
-            val timestampFormat = when (format) {
-                TimestampFormatTrait.Format.EPOCH_SECONDS -> "EpochSeconds"
-                // clients allow offsets, servers do not
-                TimestampFormatTrait.Format.DATE_TIME -> "DateTime"
-                TimestampFormatTrait.Format.HTTP_DATE -> "HttpDate"
-                TimestampFormatTrait.Format.UNKNOWN -> TODO()
-            }
+            val timestampFormat =
+                when (format) {
+                    TimestampFormatTrait.Format.EPOCH_SECONDS -> "EpochSeconds"
+                    // clients allow offsets, servers do not
+                    TimestampFormatTrait.Format.DATE_TIME -> "DateTime"
+                    TimestampFormatTrait.Format.HTTP_DATE -> "HttpDate"
+                    TimestampFormatTrait.Format.UNKNOWN -> TODO()
+                }
 
             return smithyTypes(runtimeConfig).resolve("date_time::Format::$timestampFormat")
         }
 
+        fun smithyRuntimeTestUtil(runtimeConfig: RuntimeConfig) =
+            CargoDependency.smithyRuntimeTestUtil(runtimeConfig).toType().resolve("client::http::test_util")
+
         fun captureRequest(runtimeConfig: RuntimeConfig) =
-            CargoDependency.smithyClientTestUtil(runtimeConfig).toType().resolve("test_connection::capture_request")
+            smithyRuntimeTestUtil(runtimeConfig).resolve("capture_request")
 
         fun forInlineDependency(inlineDependency: InlineDependency) =
             RuntimeType("crate::${inlineDependency.name}", inlineDependency)
 
-        fun forInlineFun(name: String, module: RustModule, func: Writable) = RuntimeType(
+        fun forInlineFun(
+            name: String,
+            module: RustModule,
+            func: Writable,
+        ) = RuntimeType(
             "${module.fullyQualifiedPath()}::$name",
             dependency = InlineDependency(name, module, listOf(), func),
         )
 
         // inlinable types
+        fun cborErrors(runtimeConfig: RuntimeConfig) = forInlineDependency(InlineDependency.cborErrors(runtimeConfig))
+
         fun ec2QueryErrors(runtimeConfig: RuntimeConfig) =
             forInlineDependency(InlineDependency.ec2QueryErrors(runtimeConfig))
 
@@ -498,5 +530,8 @@ data class RuntimeType(val path: String, val dependency: RustDependency? = null)
 
         fun idempotencyToken(runtimeConfig: RuntimeConfig) =
             forInlineDependency(InlineDependency.idempotencyToken(runtimeConfig))
+
+        fun clientRequestCompression(runtimeConfig: RuntimeConfig) =
+            forInlineDependency(InlineDependency.clientRequestCompression(runtimeConfig))
     }
 }

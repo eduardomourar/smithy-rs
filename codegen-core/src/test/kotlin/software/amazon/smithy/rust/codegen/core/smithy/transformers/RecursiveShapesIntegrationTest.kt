@@ -11,6 +11,7 @@ import org.junit.jupiter.api.assertThrows
 import software.amazon.smithy.model.Model
 import software.amazon.smithy.model.shapes.StructureShape
 import software.amazon.smithy.model.shapes.UnionShape
+import software.amazon.smithy.rust.codegen.core.smithy.generators.StructSettings
 import software.amazon.smithy.rust.codegen.core.smithy.generators.StructureGenerator
 import software.amazon.smithy.rust.codegen.core.smithy.generators.UnionGenerator
 import software.amazon.smithy.rust.codegen.core.testutil.TestWorkspace
@@ -23,7 +24,8 @@ import software.amazon.smithy.rust.codegen.core.util.lookup
 class RecursiveShapesIntegrationTest {
     @Test
     fun `recursive shapes are properly boxed`() {
-        val model = """
+        val model =
+            """
             namespace com.example
             structure Expr {
                  left: Atom,
@@ -42,7 +44,7 @@ class RecursiveShapesIntegrationTest {
                  otherMember: Atom,
                  third: SecondTree
             }
-        """.asSmithyModel()
+            """.asSmithyModel()
 
         val check = { input: Model ->
             val symbolProvider = testSymbolProvider(model)
@@ -50,7 +52,7 @@ class RecursiveShapesIntegrationTest {
             val structures = listOf("Expr", "SecondTree").map { input.lookup<StructureShape>("com.example#$it") }
             structures.forEach { struct ->
                 project.moduleFor(struct) {
-                    StructureGenerator(input, symbolProvider, this, struct, emptyList()).render()
+                    StructureGenerator(input, symbolProvider, this, struct, emptyList(), StructSettings(true)).render()
                 }
             }
             input.lookup<UnionShape>("com.example#Atom").also { atom ->
@@ -61,9 +63,10 @@ class RecursiveShapesIntegrationTest {
             project
         }
         val unmodifiedProject = check(model)
-        val output = assertThrows<CommandError> {
-            unmodifiedProject.compileAndTest(expectFailure = true)
-        }
+        val output =
+            assertThrows<CommandError> {
+                unmodifiedProject.compileAndTest(expectFailure = true)
+            }
         // THIS IS A LOAD-BEARING shouldContain! If the compiler error changes then this will break!
         output.message shouldContain "have infinite size"
 

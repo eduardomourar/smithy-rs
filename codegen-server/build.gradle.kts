@@ -26,13 +26,22 @@ dependencies {
     implementation(project(":codegen-core"))
     implementation("software.amazon.smithy:smithy-aws-traits:$smithyVersion")
     implementation("software.amazon.smithy:smithy-protocol-test-traits:$smithyVersion")
+    implementation("software.amazon.smithy:smithy-protocol-traits:$smithyVersion")
 
     // `smithy.framework#ValidationException` is defined here, which is used in `constraints.smithy`, which is used
     // in `CustomValidationExceptionWithReasonDecoratorTest`.
     testImplementation("software.amazon.smithy:smithy-validation-model:$smithyVersion")
+
+    // It's handy to re-use protocol test suite models from Smithy in our Kotlin tests.
+    testImplementation("software.amazon.smithy:smithy-protocol-tests:$smithyVersion")
 }
 
-tasks.compileKotlin { kotlinOptions.jvmTarget = "1.8" }
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+tasks.compileKotlin { kotlinOptions.jvmTarget = "11" }
 
 // Reusable license copySpec
 val licenseSpec = copySpec {
@@ -63,7 +72,7 @@ if (isTestingEnabled.toBoolean()) {
         testImplementation("io.kotest:kotest-assertions-core-jvm:$kotestVersion")
     }
 
-    tasks.compileTestKotlin { kotlinOptions.jvmTarget = "1.8" }
+    tasks.compileTestKotlin { kotlinOptions.jvmTarget = "11" }
 
     tasks.test {
         useJUnitPlatform()
@@ -85,5 +94,5 @@ publishing {
             artifact(sourcesJar)
         }
     }
-    repositories { maven { url = uri("$buildDir/repository") } }
+    repositories { maven { url = uri(layout.buildDirectory.dir("repository")) } }
 }

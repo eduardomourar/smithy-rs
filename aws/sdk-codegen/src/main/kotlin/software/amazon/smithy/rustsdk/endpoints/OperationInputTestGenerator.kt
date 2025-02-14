@@ -5,10 +5,11 @@
 
 package software.amazon.smithy.rustsdk.endpoints
 
+import software.amazon.smithy.model.knowledge.TopDownIndex
 import software.amazon.smithy.model.node.Node
 import software.amazon.smithy.model.shapes.OperationShape
 import software.amazon.smithy.model.shapes.ShapeId
-import software.amazon.smithy.rulesengine.language.syntax.parameters.Builtins
+import software.amazon.smithy.rulesengine.aws.language.functions.AwsBuiltIns
 import software.amazon.smithy.rulesengine.traits.EndpointTestCase
 import software.amazon.smithy.rulesengine.traits.EndpointTestOperationInput
 import software.amazon.smithy.rust.codegen.client.smithy.ClientCodegenContext
@@ -41,16 +42,20 @@ class OperationInputTestDecorator : ClientCodegenDecorator {
     override val name: String = "OperationInputTest"
     override val order: Byte = 0
 
-    override fun extras(codegenContext: ClientCodegenContext, rustCrate: RustCrate) {
+    override fun extras(
+        codegenContext: ClientCodegenContext,
+        rustCrate: RustCrate,
+    ) {
         val endpointTests = EndpointTypesGenerator.fromContext(codegenContext).tests.orNullIfEmpty() ?: return
         rustCrate.integrationTest("endpoint_tests") {
             Attribute(Attribute.cfg(Attribute.feature("test-util"))).render(this, AttributeKind.Inner)
-            val tests = endpointTests.flatMap { test ->
-                val generator = OperationInputTestGenerator(codegenContext, test)
-                test.operationInputs.filterNot { usesDeprecatedBuiltIns(it) }.map { operationInput ->
-                    generator.generateInput(operationInput)
+            val tests =
+                endpointTests.flatMap { test ->
+                    val generator = OperationInputTestGenerator(codegenContext, test)
+                    test.operationInputs.filterNot { usesDeprecatedBuiltIns(it) }.map { operationInput ->
+                        generator.generateInput(operationInput)
+                    }
                 }
-            }
             tests.join("\n")(this)
         }
     }
@@ -59,9 +64,9 @@ class OperationInputTestDecorator : ClientCodegenDecorator {
 private val deprecatedBuiltins =
     setOf(
         // The Rust SDK DOES NOT support the S3 global endpoint because we do not support bucket redirects
-        Builtins.S3_USE_GLOBAL_ENDPOINT,
+        AwsBuiltIns.S3_USE_GLOBAL_ENDPOINT,
         // STS global endpoint was deprecated after STS regionalization
-        Builtins.STS_USE_GLOBAL_ENDPOINT,
+        AwsBuiltIns.STS_USE_GLOBAL_ENDPOINT,
     ).map { it.builtIn.get() }
 
 fun usesDeprecatedBuiltIns(testOperationInput: EndpointTestOperationInput): Boolean {
@@ -83,12 +88,12 @@ fun usesDeprecatedBuiltIns(testOperationInput: EndpointTestOperationInput): Bool
  *         "AWS::S3::UseArnRegion": false
  *     } */
  *     /* clientParams: {} */
- *     let (conn, rcvr) = aws_smithy_client::test_connection::capture_request(None);
+ *     let (http_client, rcvr) = aws_smithy_runtime::client::http::test_util::capture_request(None);
  *     let conf = {
  *         #[allow(unused_mut)]
  *         let mut builder = aws_sdk_s3::Config::builder()
  *             .with_test_defaults()
- *             .http_connector(conn);
+ *             .http_client(http_client);
  *         let builder = builder.region(aws_types::region::Region::new("us-west-2"));
  *         let builder = builder.use_arn_region(false);
  *         builder.build()
@@ -109,7 +114,7 @@ fun usesDeprecatedBuiltIns(testOperationInput: EndpointTestOperationInput): Bool
  * ```
  *
  * Eventually, we need to pull this test into generic smithy. However, this relies on generic smithy clients
- * supporting middleware and being instantiable from config (https://github.com/awslabs/smithy-rs/issues/2194)
+ * supporting middleware and being instantiable from config (https://github.com/smithy-lang/smithy-rs/issues/2194)
  *
  * Doing this in AWS codegen allows us to actually integration test generated clients.
  */
@@ -122,98 +127,103 @@ class OperationInputTestGenerator(_ctx: ClientCodegenContext, private val test: 
     private val model = ctx.model
     private val instantiator = ClientInstantiator(ctx)
 
-    /** the Rust SDK doesn't support SigV4a — search  endpoint.properties.authSchemes[].name */
-    private fun EndpointTestCase.isSigV4a() =
-        expect.endpoint.orNull()?.properties?.get("authSchemes")?.asArrayNode()?.orNull()
-            ?.map { it.expectObjectNode().expectStringMember("name").value }?.contains("sigv4a") == true
+    fun generateInput(testOperationInput: EndpointTestOperationInput) =
+        writable {
+            val operationName = testOperationInput.operationName.toSnakeCase()
+            tokioTest(safeName("operation_input_test_$operationName")) {
+                rustTemplate(
+                    """
+                    /* documentation: ${test.documentation.orElse("No docs :(")} */
+                    /* builtIns: ${escape(Node.prettyPrintJson(testOperationInput.builtInParams))} */
+                    /* clientParams: ${escape(Node.prettyPrintJson(testOperationInput.clientParams))} */
+                    let (http_client, rcvr) = #{capture_request}(None);
+                    let conf = #{conf};
+                    let client = $moduleName::Client::from_conf(conf);
+                    let _result = dbg!(#{invoke_operation});
+                    #{assertion}
+                    """,
+                    "capture_request" to RuntimeType.captureRequest(runtimeConfig),
+                    "conf" to config(testOperationInput),
+                    "invoke_operation" to operationInvocation(testOperationInput),
+                    "assertion" to
+                        writable {
+                            test.expect.endpoint.ifPresent { endpoint ->
+                                val uri = escape(endpoint.url)
+                                rustTemplate(
+                                    """
+                                    let req = rcvr.expect_request();
+                                    let uri = req.uri().to_string();
+                                    assert!(uri.starts_with(${uri.dq()}), "expected URI to start with `$uri` but it was `{}`", uri);
+                                    """,
+                                )
+                            }
+                            test.expect.error.ifPresent { error ->
+                                val expectedError =
+                                    escape("expected error: $error [${test.documentation.orNull() ?: "no docs"}]")
+                                val escapedError = escape(error)
+                                rustTemplate(
+                                    """
+                                    rcvr.expect_no_request();
+                                    let error = _result.expect_err(${expectedError.dq()});
+                                    assert!(
+                                        format!("{:?}", error).contains(${escapedError.dq()}),
+                                        "expected error to contain `$escapedError` but it was {:?}", error
+                                    );
+                                    """,
+                                )
+                            }
+                        },
+                )
+            }
+        }
 
-    fun generateInput(testOperationInput: EndpointTestOperationInput) = writable {
-        val operationName = testOperationInput.operationName.toSnakeCase()
-        if (test.isSigV4a()) {
-            Attribute.shouldPanic("no request was received").render(this)
+    private fun operationInvocation(testOperationInput: EndpointTestOperationInput) =
+        writable {
+            rust("client.${testOperationInput.operationName.toSnakeCase()}()")
+            val operationInput =
+                model.expectShape(ctx.operationId(testOperationInput), OperationShape::class.java).inputShape(model)
+            testOperationInput.operationParams.members.forEach { (key, value) ->
+                val member = operationInput.expectMember(key.value)
+                rustTemplate(
+                    ".${member.setterName()}(#{value})",
+                    "value" to instantiator.generate(member, value),
+                )
+            }
+            rust(".send().await")
         }
-        tokioTest(safeName("operation_input_test_$operationName")) {
-            rustTemplate(
-                """
-                /* builtIns: ${escape(Node.prettyPrintJson(testOperationInput.builtInParams))} */
-                /* clientParams: ${escape(Node.prettyPrintJson(testOperationInput.clientParams))} */
-                let (conn, rcvr) = #{capture_request}(None);
-                let conf = #{conf};
-                let client = $moduleName::Client::from_conf(conf);
-                let _result = dbg!(#{invoke_operation});
-                #{assertion}
-                """,
-                "capture_request" to RuntimeType.captureRequest(runtimeConfig),
-                "conf" to config(testOperationInput),
-                "invoke_operation" to operationInvocation(testOperationInput),
-                "assertion" to writable {
-                    test.expect.endpoint.ifPresent { endpoint ->
-                        val uri = escape(endpoint.url)
-                        rustTemplate(
-                            """
-                            let req = rcvr.expect_request();
-                            let uri = req.uri().to_string();
-                            assert!(uri.starts_with(${uri.dq()}), "expected URI to start with `$uri` but it was `{}`", uri);
-                            """,
-                        )
-                    }
-                    test.expect.error.ifPresent { error ->
-                        val expectedError =
-                            escape("expected error: $error [${test.documentation.orNull() ?: "no docs"}]")
-                        val escapedError = escape(error)
-                        rustTemplate(
-                            """
-                            rcvr.expect_no_request();
-                            let error = _result.expect_err(${expectedError.dq()});
-                            assert!(
-                                format!("{:?}", error).contains(${escapedError.dq()}),
-                                "expected error to contain `$escapedError` but it was {:?}", error
-                            );
-                            """,
-                        )
-                    }
-                },
-            )
-        }
-    }
-
-    private fun operationInvocation(testOperationInput: EndpointTestOperationInput) = writable {
-        rust("client.${testOperationInput.operationName.toSnakeCase()}()")
-        val operationInput =
-            model.expectShape(ctx.operationId(testOperationInput), OperationShape::class.java).inputShape(model)
-        testOperationInput.operationParams.members.forEach { (key, value) ->
-            val member = operationInput.expectMember(key.value)
-            rustTemplate(
-                ".${member.setterName()}(#{value})",
-                "value" to instantiator.generate(member, value),
-            )
-        }
-        rust(".send().await")
-    }
 
     /** initialize service config for test */
-    private fun config(operationInput: EndpointTestOperationInput) = writable {
-        rustBlock("") {
-            Attribute.AllowUnusedMut.render(this)
-            rust("let mut builder = $moduleName::Config::builder().with_test_defaults().http_connector(conn);")
-            operationInput.builtInParams.members.forEach { (builtIn, value) ->
-                val setter = endpointCustomizations.firstNotNullOfOrNull {
-                    it.setBuiltInOnServiceConfig(
-                        builtIn.value,
-                        value,
-                        "builder",
-                    )
+    private fun config(operationInput: EndpointTestOperationInput) =
+        writable {
+            rustBlock("") {
+                Attribute.AllowUnusedMut.render(this)
+                rust("let mut builder = $moduleName::Config::builder().with_test_defaults().http_client(http_client);")
+                operationInput.builtInParams.members.forEach { (builtIn, value) ->
+                    val setter =
+                        endpointCustomizations.firstNotNullOfOrNull {
+                            it.setBuiltInOnServiceConfig(
+                                builtIn.value,
+                                value,
+                                "builder",
+                            )
+                        }
+                    if (setter != null) {
+                        setter(this)
+                    } else {
+                        Logger.getLogger("OperationTestGenerator").warning("No provider for ${builtIn.value}")
+                    }
                 }
-                if (setter != null) {
-                    setter(this)
-                } else {
-                    Logger.getLogger("OperationTestGenerator").warning("No provider for ${builtIn.value}")
+                // If the test contains Endpoint built-ins and does not contain an AWS::Region then we set one
+                if (!operationInput.builtInParams.isEmpty && !operationInput.builtInParams.containsMember("AWS::Region")) {
+                    rust("let builder = builder.region(::aws_types::region::Region::new(\"us-east-1\"));")
                 }
+                rust("builder.build()")
             }
-            rust("builder.build()")
         }
-    }
 }
 
 fun ClientCodegenContext.operationId(testOperationInput: EndpointTestOperationInput): ShapeId =
-    this.serviceShape.allOperations.first { it.name == testOperationInput.operationName }
+    TopDownIndex.of(this.model)
+        .getContainedOperations(this.serviceShape)
+        .map { it.toShapeId() }
+        .first { it.name == testOperationInput.operationName }

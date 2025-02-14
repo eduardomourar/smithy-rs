@@ -18,18 +18,20 @@
 //!
 //! This module contains two sub modules:
 //! - `repr` which contains an abstract representation of a provider chain and the logic to
-//! build it from `~/.aws/credentials` and `~/.aws/config`.
+//!   build it from `~/.aws/credentials` and `~/.aws/config`.
 //! - `exec` which contains a chain representation of providers to implement passing bootstrapped credentials
-//! through a series of providers.
+//!   through a series of providers.
 
-use crate::profile::credentials::exec::named::NamedProviderFactory;
-use crate::profile::credentials::exec::ProviderChain;
-use crate::profile::parser::ProfileFileLoadError;
+use crate::profile::cell::ErrorTakingOnceCell;
+#[allow(deprecated)]
 use crate::profile::profile_file::ProfileFiles;
 use crate::profile::Profile;
+use crate::profile::ProfileFileLoadError;
 use crate::provider_config::ProviderConfig;
-use aws_credential_types::provider::{self, error::CredentialsError, future, ProvideCredentials};
-use aws_sdk_sts::config::Builder as StsConfigBuilder;
+use aws_credential_types::{
+    provider::{self, error::CredentialsError, future, ProvideCredentials},
+    Credentials,
+};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -39,16 +41,7 @@ use std::sync::Arc;
 use tracing::Instrument;
 
 mod exec;
-mod repr;
-
-impl ProvideCredentials for ProfileFileCredentialsProvider {
-    fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
-    where
-        Self: 'a,
-    {
-        future::ProvideCredentials::new(self.load_credentials())
-    }
-}
+pub(crate) mod repr;
 
 /// AWS Profile based credentials provider
 ///
@@ -141,8 +134,13 @@ impl ProvideCredentials for ProfileFileCredentialsProvider {
 #[doc = include_str!("location_of_profile_files.md")]
 #[derive(Debug)]
 pub struct ProfileFileCredentialsProvider {
-    factory: NamedProviderFactory,
-    sts_config: StsConfigBuilder,
+    config: Arc<Config>,
+    inner_provider: ErrorTakingOnceCell<ChainProvider, CredentialsError>,
+}
+
+#[derive(Debug)]
+struct Config {
+    factory: exec::named::NamedProviderFactory,
     provider_config: ProviderConfig,
 }
 
@@ -153,50 +151,51 @@ impl ProfileFileCredentialsProvider {
     }
 
     async fn load_credentials(&self) -> provider::Result {
-        let inner_provider = build_provider_chain(&self.provider_config, &self.factory)
-            .await
-            .map_err(|err| match err {
-                ProfileFileError::NoProfilesDefined
-                | ProfileFileError::ProfileDidNotContainCredentials { .. } => {
-                    CredentialsError::not_loaded(err)
-                }
-                _ => CredentialsError::invalid_configuration(format!(
-                    "ProfileFile provider could not be built: {}",
-                    &err
-                )),
-            })?;
-        let mut creds = match inner_provider
-            .base()
-            .provide_credentials()
-            .instrument(tracing::debug_span!("load_base_credentials"))
-            .await
-        {
-            Ok(creds) => {
-                tracing::info!(creds = ?creds, "loaded base credentials");
-                creds
-            }
-            Err(e) => {
-                tracing::warn!(error = %DisplayErrorContext(&e), "failed to load base credentials");
-                return Err(CredentialsError::provider_error(e));
-            }
-        };
-        for provider in inner_provider.chain().iter() {
-            let next_creds = provider
-                .credentials(creds, &self.sts_config)
-                .instrument(tracing::debug_span!("load_assume_role", provider = ?provider))
-                .await;
-            match next_creds {
-                Ok(next_creds) => {
-                    tracing::info!(creds = ?next_creds, "loaded assume role credentials");
-                    creds = next_creds
-                }
-                Err(e) => {
-                    tracing::warn!(provider = ?provider, "failed to load assume role credentials");
-                    return Err(CredentialsError::provider_error(e));
-                }
-            }
-        }
-        Ok(creds)
+        // The inner provider needs to be cached across successive calls to load_credentials
+        // since the base providers can potentially have information cached in their instances.
+        // For example, the SsoCredentialsProvider maintains an in-memory expiring token cache.
+        let inner_provider = self
+            .inner_provider
+            .get_or_init(
+                {
+                    let config = self.config.clone();
+                    move || async move {
+                        match build_provider_chain(config.clone()).await {
+                            Ok(chain) => Ok(ChainProvider {
+                                config: config.clone(),
+                                chain: Some(Arc::new(chain)),
+                            }),
+                            Err(err) => match err {
+                                ProfileFileError::NoProfilesDefined
+                                | ProfileFileError::ProfileDidNotContainCredentials { .. } => {
+                                    Ok(ChainProvider {
+                                        config: config.clone(),
+                                        chain: None,
+                                    })
+                                }
+                                _ => Err(CredentialsError::invalid_configuration(format!(
+                                    "ProfileFile provider could not be built: {}",
+                                    &err
+                                ))),
+                            },
+                        }
+                    }
+                },
+                CredentialsError::unhandled(
+                    "profile file credentials provider initialization error already taken",
+                ),
+            )
+            .await?;
+        inner_provider.provide_credentials().await
+    }
+}
+
+impl ProvideCredentials for ProfileFileCredentialsProvider {
+    fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        future::ProvideCredentials::new(self.load_credentials())
     }
 }
 
@@ -264,7 +263,32 @@ pub enum ProfileFileError {
     FeatureNotEnabled {
         /// The feature or comma delimited list of features that must be enabled
         feature: Cow<'static, str>,
+        /// Additional information about the missing feature
+        message: Option<Cow<'static, str>>,
     },
+
+    /// Missing sso-session section in config
+    #[non_exhaustive]
+    MissingSsoSession {
+        /// The name of the profile that specified `sso_session`
+        profile: String,
+        /// SSO session name
+        sso_session: String,
+    },
+
+    /// Invalid SSO configuration
+    #[non_exhaustive]
+    InvalidSsoConfig {
+        /// The name of the profile that the error originates in
+        profile: String,
+        /// Error message
+        message: Cow<'static, str>,
+    },
+
+    /// Profile is intended to be used in the token provider chain rather
+    /// than in the credentials chain.
+    #[non_exhaustive]
+    TokenProviderConfig {},
 }
 
 impl ProfileFileError {
@@ -317,10 +341,30 @@ impl Display for ProfileFileError {
                 "profile `{}` did not contain credential information",
                 profile
             ),
-            ProfileFileError::FeatureNotEnabled { feature: message } => {
+            ProfileFileError::FeatureNotEnabled { feature, message } => {
+                let message = message.as_deref().unwrap_or_default();
                 write!(
                     f,
-                    "This behavior requires following cargo feature(s) enabled: {message}",
+                    "This behavior requires following cargo feature(s) enabled: {feature}. {message}",
+                )
+            }
+            ProfileFileError::MissingSsoSession {
+                profile,
+                sso_session,
+            } => {
+                write!(f, "sso-session named `{sso_session}` (referenced by profile `{profile}`) was not found")
+            }
+            ProfileFileError::InvalidSsoConfig { profile, message } => {
+                write!(f, "profile `{profile}` has invalid SSO config: {message}")
+            }
+            ProfileFileError::TokenProviderConfig { .. } => {
+                // TODO(https://github.com/awslabs/aws-sdk-rust/issues/703): Update error message once token support is added
+                write!(
+                    f,
+                    "selected profile will resolve an access token instead of credentials \
+                     since it doesn't have `sso_account_id` and `sso_role_name` set. Access token \
+                     support for services such as Code Catalyst hasn't been implemented yet and is \
+                     being tracked in https://github.com/awslabs/aws-sdk-rust/issues/703"
                 )
             }
         }
@@ -332,6 +376,7 @@ impl Display for ProfileFileError {
 pub struct Builder {
     provider_config: Option<ProviderConfig>,
     profile_override: Option<String>,
+    #[allow(deprecated)]
     profile_files: Option<ProfileFiles>,
     custom_providers: HashMap<Cow<'static, str>, Arc<dyn ProvideCredentials>>,
 }
@@ -399,6 +444,7 @@ impl Builder {
     }
 
     /// Set the profile file that should be used by the [`ProfileFileCredentialsProvider`]
+    #[allow(deprecated)]
     pub fn profile_files(mut self, profile_files: ProfileFiles) -> Self {
         self.profile_files = Some(profile_files);
         self
@@ -443,53 +489,276 @@ impl Builder {
         let factory = exec::named::NamedProviderFactory::new(named_providers);
 
         ProfileFileCredentialsProvider {
-            factory,
-            sts_config: conf.sts_client_config(),
-            provider_config: conf,
+            config: Arc::new(Config {
+                factory,
+                provider_config: conf,
+            }),
+            inner_provider: ErrorTakingOnceCell::new(),
         }
     }
 }
 
 async fn build_provider_chain(
-    provider_config: &ProviderConfig,
-    factory: &NamedProviderFactory,
-) -> Result<ProviderChain, ProfileFileError> {
-    let profile_set = provider_config
+    config: Arc<Config>,
+) -> Result<exec::ProviderChain, ProfileFileError> {
+    let profile_set = config
+        .provider_config
         .try_profile()
         .await
         .map_err(|parse_err| ProfileFileError::InvalidProfile(parse_err.clone()))?;
     let repr = repr::resolve_chain(profile_set)?;
     tracing::info!(chain = ?repr, "constructed abstract provider from config file");
-    exec::ProviderChain::from_repr(provider_config, repr, factory)
+    exec::ProviderChain::from_repr(&config.provider_config, repr, &config.factory)
+}
+
+#[derive(Debug)]
+struct ChainProvider {
+    config: Arc<Config>,
+    chain: Option<Arc<exec::ProviderChain>>,
+}
+
+impl ChainProvider {
+    async fn provide_credentials(&self) -> Result<Credentials, CredentialsError> {
+        // Can't borrow `self` across an await point, or else we lose `Send` on the returned future
+        let config = self.config.clone();
+        let chain = self.chain.clone();
+
+        if let Some(chain) = chain {
+            let mut creds = match chain
+                .base()
+                .provide_credentials()
+                .instrument(tracing::debug_span!("load_base_credentials"))
+                .await
+            {
+                Ok(creds) => {
+                    tracing::info!(creds = ?creds, "loaded base credentials");
+                    creds
+                }
+                Err(e) => {
+                    tracing::warn!(error = %DisplayErrorContext(&e), "failed to load base credentials");
+                    return Err(CredentialsError::provider_error(e));
+                }
+            };
+
+            // we want to create `SdkConfig` _after_ we have resolved the profile or else
+            // we won't get things like `service_config()` set appropriately.
+            let sdk_config = config.provider_config.client_config();
+            for provider in chain.chain().iter() {
+                let next_creds = provider
+                    .credentials(creds, &sdk_config)
+                    .instrument(tracing::debug_span!("load_assume_role", provider = ?provider))
+                    .await;
+                match next_creds {
+                    Ok(next_creds) => {
+                        tracing::info!(creds = ?next_creds, "loaded assume role credentials");
+                        creds = next_creds
+                    }
+                    Err(e) => {
+                        tracing::warn!(provider = ?provider, "failed to load assume role credentials");
+                        return Err(CredentialsError::provider_error(e));
+                    }
+                }
+            }
+            Ok(creds)
+        } else {
+            Err(CredentialsError::not_loaded_no_source())
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
     use crate::profile::credentials::Builder;
-    use crate::test_case::TestEnvironment;
+    use aws_credential_types::provider::ProvideCredentials;
 
     macro_rules! make_test {
         ($name: ident) => {
             #[tokio::test]
             async fn $name() {
-                TestEnvironment::from_dir(concat!(
-                    "./test-data/profile-provider/",
-                    stringify!($name)
-                ))
+                let _ = crate::test_case::TestEnvironment::from_dir(
+                    concat!("./test-data/profile-provider/", stringify!($name)),
+                    crate::test_case::test_credentials_provider(|config| async move {
+                        Builder::default()
+                            .configure(&config)
+                            .build()
+                            .provide_credentials()
+                            .await
+                    }),
+                )
                 .await
                 .unwrap()
-                .execute(|conf| async move { Builder::default().configure(&conf).build() })
-                .await
+                .execute()
+                .await;
             }
         };
     }
 
     make_test!(e2e_assume_role);
+    make_test!(e2e_fips_and_dual_stack_sts);
     make_test!(empty_config);
     make_test!(retry_on_error);
     make_test!(invalid_config);
     make_test!(region_override);
+    // TODO(https://github.com/awslabs/aws-sdk-rust/issues/1117) This test is disabled on Windows because it uses Unix-style paths
+    #[cfg(all(feature = "credentials-process", not(windows)))]
     make_test!(credential_process);
+    // TODO(https://github.com/awslabs/aws-sdk-rust/issues/1117) This test is disabled on Windows because it uses Unix-style paths
+    #[cfg(all(feature = "credentials-process", not(windows)))]
     make_test!(credential_process_failure);
+    #[cfg(feature = "credentials-process")]
     make_test!(credential_process_invalid);
+    #[cfg(feature = "sso")]
+    make_test!(sso_credentials);
+    #[cfg(feature = "sso")]
+    make_test!(sso_override_global_env_url);
+    #[cfg(feature = "sso")]
+    make_test!(sso_token);
+
+    make_test!(assume_role_override_global_env_url);
+    make_test!(assume_role_override_service_env_url);
+    make_test!(assume_role_override_global_profile_url);
+    make_test!(assume_role_override_service_profile_url);
+}
+
+#[cfg(all(test, feature = "sso"))]
+mod sso_tests {
+    use crate::{profile::credentials::Builder, provider_config::ProviderConfig};
+    use aws_credential_types::provider::ProvideCredentials;
+    use aws_sdk_sso::config::RuntimeComponents;
+    use aws_smithy_runtime_api::client::{
+        http::{
+            HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings,
+            SharedHttpConnector,
+        },
+        orchestrator::{HttpRequest, HttpResponse},
+    };
+    use aws_smithy_types::body::SdkBody;
+    use aws_types::os_shim_internal::{Env, Fs};
+    use std::collections::HashMap;
+
+    // TODO(https://github.com/awslabs/aws-sdk-rust/issues/1117) This test is ignored on Windows because it uses Unix-style paths
+    #[cfg_attr(windows, ignore)]
+    // In order to preserve the SSO token cache, the inner provider must only
+    // be created once, rather than once per credential resolution.
+    #[tokio::test]
+    async fn create_inner_provider_exactly_once() {
+        #[derive(Debug)]
+        struct ClientInner {
+            expected_token: &'static str,
+        }
+        impl HttpConnector for ClientInner {
+            fn call(&self, request: HttpRequest) -> HttpConnectorFuture {
+                assert_eq!(
+                    self.expected_token,
+                    request.headers().get("x-amz-sso_bearer_token").unwrap()
+                );
+                HttpConnectorFuture::ready(Ok(HttpResponse::new(
+                    200.try_into().unwrap(),
+                    SdkBody::from("{\"roleCredentials\":{\"accessKeyId\":\"ASIARTESTID\",\"secretAccessKey\":\"TESTSECRETKEY\",\"sessionToken\":\"TESTSESSIONTOKEN\",\"expiration\": 1651516560000}}"),
+                )))
+            }
+        }
+        #[derive(Debug)]
+        struct Client {
+            inner: SharedHttpConnector,
+        }
+        impl Client {
+            fn new(expected_token: &'static str) -> Self {
+                Self {
+                    inner: SharedHttpConnector::new(ClientInner { expected_token }),
+                }
+            }
+        }
+        impl HttpClient for Client {
+            fn http_connector(
+                &self,
+                _settings: &HttpConnectorSettings,
+                _components: &RuntimeComponents,
+            ) -> SharedHttpConnector {
+                self.inner.clone()
+            }
+        }
+
+        let fs = Fs::from_map({
+            let mut map = HashMap::new();
+            map.insert(
+                "/home/.aws/config".to_string(),
+                br#"
+[profile default]
+sso_session = dev
+sso_account_id = 012345678901
+sso_role_name = SampleRole
+region = us-east-1
+
+[sso-session dev]
+sso_region = us-east-1
+sso_start_url = https://d-abc123.awsapps.com/start
+                "#
+                .to_vec(),
+            );
+            map.insert(
+                "/home/.aws/sso/cache/34c6fceca75e456f25e7e99531e2425c6c1de443.json".to_string(),
+                br#"
+                {
+                    "accessToken": "secret-access-token",
+                    "expiresAt": "2199-11-14T04:05:45Z",
+                    "refreshToken": "secret-refresh-token",
+                    "clientId": "ABCDEFG323242423121312312312312312",
+                    "clientSecret": "ABCDE123",
+                    "registrationExpiresAt": "2199-03-06T19:53:17Z",
+                    "region": "us-east-1",
+                    "startUrl": "https://d-abc123.awsapps.com/start"
+                }
+                "#
+                .to_vec(),
+            );
+            map
+        });
+        let provider_config = ProviderConfig::empty()
+            .with_fs(fs.clone())
+            .with_env(Env::from_slice(&[("HOME", "/home")]))
+            .with_http_client(Client::new("secret-access-token"));
+        let provider = Builder::default().configure(&provider_config).build();
+
+        let first_creds = provider.provide_credentials().await.unwrap();
+
+        // Write to the token cache with an access token that won't match the fake client's
+        // expected access token, and thus, won't return SSO credentials.
+        fs.write(
+            "/home/.aws/sso/cache/34c6fceca75e456f25e7e99531e2425c6c1de443.json",
+            r#"
+            {
+                "accessToken": "NEW!!secret-access-token",
+                "expiresAt": "2199-11-14T04:05:45Z",
+                "refreshToken": "secret-refresh-token",
+                "clientId": "ABCDEFG323242423121312312312312312",
+                "clientSecret": "ABCDE123",
+                "registrationExpiresAt": "2199-03-06T19:53:17Z",
+                "region": "us-east-1",
+                "startUrl": "https://d-abc123.awsapps.com/start"
+            }
+            "#,
+        )
+        .await
+        .unwrap();
+
+        // Loading credentials will still work since the SSOTokenProvider should have only
+        // been created once, and thus, the correct token is still in an in-memory cache.
+        let second_creds = provider
+            .provide_credentials()
+            .await
+            .expect("used cached token instead of loading from the file system");
+        assert_eq!(first_creds, second_creds);
+
+        // Now create a new provider, which should use the new cached token value from the file system
+        // since it won't have the in-memory cache. We do this just to verify that the FS mutation above
+        // actually worked correctly.
+        let provider_config = ProviderConfig::empty()
+            .with_fs(fs.clone())
+            .with_env(Env::from_slice(&[("HOME", "/home")]))
+            .with_http_client(Client::new("NEW!!secret-access-token"));
+        let provider = Builder::default().configure(&provider_config).build();
+        let third_creds = provider.provide_credentials().await.unwrap();
+        assert_eq!(second_creds, third_creds);
+    }
 }

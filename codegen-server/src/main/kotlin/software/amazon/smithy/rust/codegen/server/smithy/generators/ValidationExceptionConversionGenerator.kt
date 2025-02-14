@@ -31,8 +31,11 @@ interface ValidationExceptionConversionGenerator {
 
     // Simple shapes.
     fun stringShapeConstraintViolationImplBlock(stringConstraintsInfo: Collection<StringTraitInfo>): Writable
+
     fun enumShapeConstraintViolationImplBlock(enumTrait: EnumTrait): Writable
+
     fun numberShapeConstraintViolationImplBlock(rangeInfo: Range): Writable
+
     fun blobShapeConstraintViolationImplBlock(blobConstraintsInfo: Collection<BlobLength>): Writable
 
     // Aggregate shapes.
@@ -43,9 +46,15 @@ interface ValidationExceptionConversionGenerator {
         symbolProvider: RustSymbolProvider,
         model: Model,
     ): Writable
-    fun builderConstraintViolationImplBlock(constraintViolations: Collection<ConstraintViolation>): Writable
+
+    fun builderConstraintViolationFn(constraintViolations: Collection<ConstraintViolation>): Writable
+
     fun collectionShapeConstraintViolationImplBlock(
         collectionConstraintsInfo: Collection<CollectionTraitInfo>,
         isMemberConstrained: Boolean,
+    ): Writable
+
+    fun unionShapeConstraintViolationImplBlock(
+        unionConstraintTraitInfo: Collection<UnionConstraintTraitInfo>,
     ): Writable
 }

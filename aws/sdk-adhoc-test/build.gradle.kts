@@ -9,78 +9,89 @@ extra["moduleName"] = "software.amazon.smithy.rust.awssdk.adhoc.test"
 tasks["jar"].enabled = false
 
 plugins {
-    id("software.amazon.smithy")
+    java
+    id("software.amazon.smithy.gradle.smithy-base")
+    id("software.amazon.smithy.gradle.smithy-jar")
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
 }
 
 val smithyVersion: String by project
-val defaultRustDocFlags: String by project
 val properties = PropertyRetriever(rootProject, project)
 
 val pluginName = "rust-client-codegen"
 val workingDirUnderBuildDir = "smithyprojections/sdk-adhoc-test/"
 
 configure<software.amazon.smithy.gradle.SmithyExtension> {
-    outputDirectory = file("$buildDir/$workingDirUnderBuildDir")
+    outputDirectory = layout.buildDirectory.dir(workingDirUnderBuildDir).get().asFile
 }
 
-buildscript {
-    val smithyVersion: String by project
-    dependencies {
-        classpath("software.amazon.smithy:smithy-cli:$smithyVersion")
-    }
-}
+val checkedInSdkLockfile = rootProject.projectDir.resolve("aws/sdk/Cargo.lock")
 
 dependencies {
     implementation(project(":aws:sdk-codegen"))
     implementation("software.amazon.smithy:smithy-aws-protocol-tests:$smithyVersion")
     implementation("software.amazon.smithy:smithy-protocol-test-traits:$smithyVersion")
     implementation("software.amazon.smithy:smithy-aws-traits:$smithyVersion")
+    implementation("software.amazon.smithy:smithy-model:$smithyVersion")
+}
+
+fun getNullabilityCheckMode(): String = properties.get("nullability.check.mode") ?: "CLIENT_CAREFUL"
+
+fun baseTest(service: String, module: String, imports: List<String> = listOf()): CodegenTest {
+    return CodegenTest(
+        service = service,
+        module = module,
+        imports = imports,
+        extraCodegenConfig = """
+            "includeFluentClient": false,
+            "nullabilityCheckMode": "${getNullabilityCheckMode()}"
+        """,
+    )
 }
 
 val allCodegenTests = listOf(
-    CodegenTest(
-        "com.amazonaws.apigateway#BackplaneControlService",
-        "apigateway",
-        imports = listOf("models/apigateway-rules.smithy"),
-        extraConfig = """
-            ,
-            "codegen": {
-                "includeFluentClient": false
-            },
-            "customizationConfig": {
-                "awsSdk": {
-                    "generateReadme": false
-                }
-            }
-        """,
-    ),
-    CodegenTest(
+    baseTest(
         "com.amazonaws.testservice#TestService",
         "endpoint-test-service",
         imports = listOf("models/single-static-endpoint.smithy"),
-        extraConfig = """
-            ,
-            "codegen": {
-                "includeFluentClient": false
-            },
-            "customizationConfig": {
-                "awsSdk": {
-                    "generateReadme": false
-                }
-            }
-        """,
     ),
+    baseTest(
+        "com.amazonaws.testservice#RequiredValues",
+        "required-values",
+        imports = listOf("models/required-value-test.smithy"),
+    ),
+    // service specific protocol tests
+    baseTest(
+        "com.amazonaws.apigateway#BackplaneControlService",
+        "apigateway",
+        imports = listOf("models/apigateway-rules.smithy"),
+    ),
+    baseTest(
+        "com.amazonaws.glacier#Glacier",
+        "glacier",
+    ),
+    // TODO(https://github.com/smithy-lang/smithy-rs/issues/139) - we assume this will be handled by EP2.0 rules but
+    //  the machinelearning service model has yet to be updated to include rules that handle the expected customization
+    // baseTest(
+    //     "com.amazonaws.machinelearning#AmazonML_20141212",
+    //     "machinelearning",
+    // ),
 )
 
 project.registerGenerateSmithyBuildTask(rootProject, pluginName, allCodegenTests)
 project.registerGenerateCargoWorkspaceTask(rootProject, pluginName, allCodegenTests, workingDirUnderBuildDir)
-project.registerGenerateCargoConfigTomlTask(buildDir.resolve(workingDirUnderBuildDir))
+project.registerGenerateCargoConfigTomlTask(layout.buildDirectory.dir(workingDirUnderBuildDir).get().asFile)
+project.registerCopyCheckedInCargoLockfileTask(checkedInSdkLockfile, layout.buildDirectory.dir(workingDirUnderBuildDir).get().asFile)
 
-tasks["smithyBuildJar"].dependsOn("generateSmithyBuild")
-tasks["assemble"].finalizedBy("generateCargoWorkspace")
+tasks["smithyBuild"].dependsOn("generateSmithyBuild")
+tasks["assemble"].dependsOn("generateCargoWorkspace").finalizedBy("copyCheckedInCargoLockfile")
 
 project.registerModifyMtimeTask()
-project.registerCargoCommandsTasks(buildDir.resolve(workingDirUnderBuildDir), defaultRustDocFlags)
+project.registerCargoCommandsTasks(layout.buildDirectory.dir(workingDirUnderBuildDir).get().asFile)
 
 tasks["test"].finalizedBy(cargoCommands(properties).map { it.toString })
 

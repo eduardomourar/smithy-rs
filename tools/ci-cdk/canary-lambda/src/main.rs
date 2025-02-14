@@ -26,11 +26,11 @@ mod latest;
 #[cfg(feature = "latest")]
 pub(crate) use latest as current_canary;
 
-// NOTE: This module can be deleted 3 releases after release-2023-01-26
-#[cfg(feature = "release-2023-01-26")]
-mod release_2023_01_26;
-#[cfg(feature = "release-2023-01-26")]
-pub(crate) use release_2023_01_26 as current_canary;
+// NOTE: This module can be deleted 3 releases after release-2023-10-26
+#[cfg(feature = "release-2023-10-26")]
+mod release_2023_10_26;
+#[cfg(feature = "release-2023-10-26")]
+pub(crate) use release_2023_10_26 as current_canary;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -76,6 +76,7 @@ struct LambdaMain {
 }
 
 impl LambdaMain {
+    #[allow(deprecated)]
     async fn new() -> Self {
         Self {
             sdk_config: aws_config::load_from_env().await,
@@ -122,7 +123,7 @@ async fn lambda_main(sdk_config: SdkConfig) -> Result<Value, Error> {
 }
 
 async fn canary_result(handle: JoinHandle<anyhow::Result<()>>) -> Result<(), String> {
-    match timeout(Duration::from_secs(20), handle).await {
+    match timeout(Duration::from_secs(180), handle).await {
         Err(_timeout) => Err("canary timed out".into()),
         Ok(Ok(result)) => match result {
             Ok(_) => Ok(()),
