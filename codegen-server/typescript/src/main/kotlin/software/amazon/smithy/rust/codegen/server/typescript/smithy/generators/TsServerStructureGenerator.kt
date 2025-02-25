@@ -13,6 +13,7 @@ import software.amazon.smithy.rust.codegen.core.rustlang.RustWriter
 import software.amazon.smithy.rust.codegen.core.rustlang.rustInlineTemplate
 import software.amazon.smithy.rust.codegen.core.rustlang.writable
 import software.amazon.smithy.rust.codegen.core.smithy.RustSymbolProvider
+import software.amazon.smithy.rust.codegen.core.smithy.generators.StructSettings
 import software.amazon.smithy.rust.codegen.core.smithy.generators.StructureGenerator
 import software.amazon.smithy.rust.codegen.core.util.hasTrait
 import software.amazon.smithy.rust.codegen.server.typescript.smithy.TsServerCargoDependency
@@ -27,16 +28,16 @@ class TsServerStructureGenerator(
     private val symbolProvider: RustSymbolProvider,
     private val writer: RustWriter,
     private val shape: StructureShape,
-) : StructureGenerator(model, symbolProvider, writer, shape, listOf()) {
-
+) : StructureGenerator(model, symbolProvider, writer, shape, listOf(), StructSettings(flattenVecAccessors = false)) {
     private val napiDerive = TsServerCargoDependency.NapiDerive.toType()
 
     override fun renderStructure() {
-        val flavour = if (shape.hasTrait<ErrorTrait>()) {
-            "constructor"
-        } else {
-            "object"
-        }
+        val flavour =
+            if (shape.hasTrait<ErrorTrait>()) {
+                "constructor"
+            } else {
+                "object"
+            }
         Attribute(
             writable {
                 rustInlineTemplate(

@@ -4,7 +4,7 @@
  */
 
 use crate::provider_config::ProviderConfig;
-use crate::standard_property::{PropertyResolutionError, StandardProperty};
+use aws_runtime::env_config::{EnvConfigError, EnvConfigValue};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use aws_types::app_name::{AppName, InvalidAppName};
 
@@ -41,11 +41,10 @@ pub struct Builder {
 }
 
 impl Builder {
-    #[doc(hidden)]
     /// Configure the default chain
     ///
     /// Exposed for overriding the environment when unit-testing providers
-    pub fn configure(self, configuration: &ProviderConfig) -> Self {
+    pub(crate) fn configure(self, configuration: &ProviderConfig) -> Self {
         Self {
             provider_config: configuration.clone(),
         }
@@ -57,22 +56,24 @@ impl Builder {
         self
     }
 
-    async fn fallback_app_name(
-        &self,
-    ) -> Result<Option<AppName>, PropertyResolutionError<InvalidAppName>> {
-        StandardProperty::new()
+    async fn fallback_app_name(&self) -> Result<Option<AppName>, EnvConfigError<InvalidAppName>> {
+        let env = self.provider_config.env();
+        let profiles = self.provider_config.profile().await;
+
+        EnvConfigValue::new()
             .profile("sdk-ua-app-id")
-            .validate(&self.provider_config, |name| AppName::new(name.to_string()))
-            .await
+            .validate(&env, profiles, |name| AppName::new(name.to_string()))
     }
 
     /// Build an [`AppName`] from the default chain
     pub async fn app_name(self) -> Option<AppName> {
-        let standard = StandardProperty::new()
+        let env = self.provider_config.env();
+        let profiles = self.provider_config.profile().await;
+
+        let standard = EnvConfigValue::new()
             .env("AWS_SDK_UA_APP_ID")
             .profile("sdk_ua_app_id")
-            .validate(&self.provider_config, |name| AppName::new(name.to_string()))
-            .await;
+            .validate(&env, profiles, |name| AppName::new(name.to_string()));
         let with_fallback = match standard {
             Ok(None) => self.fallback_app_name().await,
             other => other,
@@ -88,9 +89,11 @@ impl Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(deprecated)]
     use crate::profile::profile_file::{ProfileFileKind, ProfileFiles};
     use crate::provider_config::ProviderConfig;
-    use crate::test_case::{no_traffic_connector, InstantSleep};
+    use crate::test_case::{no_traffic_client, InstantSleep};
+    use aws_smithy_runtime_api::client::behavior_version::BehaviorVersion;
     use aws_types::os_shim_internal::{Env, Fs};
 
     #[tokio::test]
@@ -105,7 +108,7 @@ mod tests {
                 &ProviderConfig::no_configuration()
                     .with_fs(fs)
                     .with_env(env)
-                    .with_http_connector(no_traffic_connector()),
+                    .with_http_client(no_traffic_client()),
             )
             .app_name()
             .await;
@@ -117,14 +120,19 @@ mod tests {
     #[tokio::test]
     async fn profile_name_override() {
         let fs = Fs::from_slice(&[("test_config", "[profile custom]\nsdk_ua_app_id = correct")]);
-        let conf = crate::from_env()
+        let conf = crate::defaults(BehaviorVersion::latest())
             .sleep_impl(InstantSleep)
             .fs(fs)
-            .http_connector(no_traffic_connector())
+            .http_client(no_traffic_client())
             .profile_name("custom")
             .profile_files(
+                #[allow(deprecated)]
                 ProfileFiles::builder()
-                    .with_file(ProfileFileKind::Config, "test_config")
+                    .with_file(
+                        #[allow(deprecated)]
+                        ProfileFileKind::Config,
+                        "test_config",
+                    )
                     .build(),
             )
             .load()
@@ -141,7 +149,7 @@ mod tests {
                 &ProviderConfig::empty()
                     .with_fs(fs)
                     .with_env(env)
-                    .with_http_connector(no_traffic_connector()),
+                    .with_http_client(no_traffic_client()),
             )
             .app_name()
             .await;
@@ -158,7 +166,7 @@ mod tests {
                 &ProviderConfig::empty()
                     .with_fs(fs)
                     .with_env(env)
-                    .with_http_connector(no_traffic_connector()),
+                    .with_http_client(no_traffic_client()),
             )
             .app_name()
             .await;

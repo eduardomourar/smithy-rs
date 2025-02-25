@@ -9,6 +9,7 @@ import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.codegen.core.SymbolProvider
 import software.amazon.smithy.model.shapes.CollectionShape
 import software.amazon.smithy.model.shapes.EnumShape
+import software.amazon.smithy.model.shapes.Shape
 import software.amazon.smithy.model.shapes.StructureShape
 import software.amazon.smithy.model.shapes.UnionShape
 import software.amazon.smithy.model.traits.LengthTrait
@@ -16,19 +17,23 @@ import software.amazon.smithy.model.traits.Trait
 import software.amazon.smithy.model.traits.UniqueItemsTrait
 import software.amazon.smithy.rust.codegen.core.rustlang.RustWriter
 import software.amazon.smithy.rust.codegen.core.rustlang.Visibility
+import software.amazon.smithy.rust.codegen.core.rustlang.Writable
 import software.amazon.smithy.rust.codegen.core.rustlang.docs
 import software.amazon.smithy.rust.codegen.core.rustlang.documentShape
 import software.amazon.smithy.rust.codegen.core.rustlang.join
 import software.amazon.smithy.rust.codegen.core.rustlang.rust
 import software.amazon.smithy.rust.codegen.core.rustlang.rustBlock
 import software.amazon.smithy.rust.codegen.core.rustlang.rustTemplate
+import software.amazon.smithy.rust.codegen.core.rustlang.writable
 import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType
 import software.amazon.smithy.rust.codegen.core.smithy.expectRustMetadata
 import software.amazon.smithy.rust.codegen.core.util.PANIC
+import software.amazon.smithy.rust.codegen.core.util.hasTrait
 import software.amazon.smithy.rust.codegen.core.util.orNull
 import software.amazon.smithy.rust.codegen.server.smithy.PubCrateConstraintViolationSymbolProvider
 import software.amazon.smithy.rust.codegen.server.smithy.ServerCodegenContext
 import software.amazon.smithy.rust.codegen.server.smithy.canReachConstrainedShape
+import software.amazon.smithy.rust.codegen.server.smithy.shapeConstraintViolationDisplayMessage
 import software.amazon.smithy.rust.codegen.server.smithy.supportedCollectionConstraintTraits
 import software.amazon.smithy.rust.codegen.server.smithy.validationErrorMessage
 
@@ -76,12 +81,14 @@ class ConstrainedCollectionGenerator(
         val constraintViolation = constraintViolationSymbolProvider.toSymbol(shape)
         val constrainedSymbol = symbolProvider.toSymbol(shape)
 
-        val codegenScope = arrayOf(
-            "ValueMemberSymbol" to constrainedShapeSymbolProvider.toSymbol(shape.member),
-            "From" to RuntimeType.From,
-            "TryFrom" to RuntimeType.TryFrom,
-            "ConstraintViolation" to constraintViolation,
-        )
+        val codegenScope =
+            arrayOf(
+                "ValueMemberSymbol" to constrainedShapeSymbolProvider.toSymbol(shape.member),
+                "From" to RuntimeType.From,
+                "TryFrom" to RuntimeType.TryFrom,
+                "ConstraintViolation" to constraintViolation,
+                *RuntimeType.preludeScope,
+            )
 
         writer.documentShape(shape, model)
         writer.docs(rustDocsConstrainedTypeEpilogue(name))
@@ -116,9 +123,10 @@ class ConstrainedCollectionGenerator(
                 #{ValidationFunctions:W}
                 """,
                 *codegenScope,
-                "ValidationFunctions" to constraintsInfo.map {
-                    it.validationFunctionDefinition(constraintViolation, inner)
-                }.join("\n"),
+                "ValidationFunctions" to
+                    constraintsInfo.map {
+                        it.validationFunctionDefinition(constraintViolation, inner)
+                    }.join("\n"),
             )
         }
 
@@ -128,7 +136,7 @@ class ConstrainedCollectionGenerator(
                 type Error = #{ConstraintViolation};
 
                 /// ${rustDocsTryFromMethod(name, inner)}
-                fn try_from(value: $inner) -> Result<Self, Self::Error> {
+                fn try_from(value: $inner) -> #{Result}<Self, Self::Error> {
                     #{ConstraintChecks:W}
 
                     Ok(Self(value))
@@ -280,7 +288,7 @@ sealed class CollectionTraitInfo {
                         // implement `Eq` and `Hash`.
                         rustTemplate(
                             """
-                            fn check_unique_items(items: #{Vec}<#{MemberSymbol}>) -> Result<#{Vec}<#{MemberSymbol}>, #{ConstraintViolation}> {
+                            fn check_unique_items(items: #{Vec}<#{MemberSymbol}>) -> #{Result}<#{Vec}<#{MemberSymbol}>, #{ConstraintViolation}> {
                                 let mut seen = #{HashMap}::new();
                                 let mut duplicate_indices = #{Vec}::new();
                                 for (idx, item) in items.iter().enumerate() {
@@ -309,10 +317,21 @@ sealed class CollectionTraitInfo {
                             "HashMap" to RuntimeType.HashMap,
                             "MemberSymbol" to memberSymbol,
                             "ConstraintViolation" to constraintViolation,
+                            *RuntimeType.preludeScope,
                         )
                     }
                 },
             )
+
+        override fun shapeConstraintViolationDisplayMessage(shape: Shape) =
+            writable {
+                rustTemplate(
+                    """
+                    Self::UniqueItems { duplicate_indices, .. } =>
+                        format!("${uniqueItemsTrait.shapeConstraintViolationDisplayMessage(shape).replace("#", "##")}", &duplicate_indices),
+                    """,
+                )
+            }
     }
 
     data class Length(val lengthTrait: LengthTrait) : CollectionTraitInfo() {
@@ -339,7 +358,7 @@ sealed class CollectionTraitInfo {
                     {
                         rustTemplate(
                             """
-                            fn check_length(length: usize) -> Result<(), #{ConstraintViolation}> {
+                            fn check_length(length: usize) -> #{Result}<(), #{ConstraintViolation}> {
                                 if ${lengthTrait.rustCondition("length")} {
                                     Ok(())
                                 } else {
@@ -348,14 +367,30 @@ sealed class CollectionTraitInfo {
                             }
                             """,
                             "ConstraintViolation" to constraintViolation,
+                            *RuntimeType.preludeScope,
                         )
                     }
                 },
             )
+
+        override fun shapeConstraintViolationDisplayMessage(shape: Shape) =
+            writable {
+                rustTemplate(
+                    """
+                    Self::Length(length) => {
+                        format!("${lengthTrait.shapeConstraintViolationDisplayMessage(shape).replace("#", "##")}", length)
+                    },
+                    """,
+                )
+            }
     }
 
     companion object {
-        private fun fromTrait(trait: Trait, shape: CollectionShape, symbolProvider: SymbolProvider): CollectionTraitInfo {
+        private fun fromTrait(
+            trait: Trait,
+            shape: CollectionShape,
+            symbolProvider: SymbolProvider,
+        ): CollectionTraitInfo {
             check(shape.hasTrait(trait.toShapeId()))
             return when (trait) {
                 is LengthTrait -> {
@@ -370,11 +405,16 @@ sealed class CollectionTraitInfo {
             }
         }
 
-        fun fromShape(shape: CollectionShape, symbolProvider: SymbolProvider): List<CollectionTraitInfo> =
+        fun fromShape(
+            shape: CollectionShape,
+            symbolProvider: SymbolProvider,
+        ): List<CollectionTraitInfo> =
             supportedCollectionConstraintTraits
                 .mapNotNull { shape.getTrait(it).orNull() }
                 .map { trait -> fromTrait(trait, shape, symbolProvider) }
     }
 
     abstract fun toTraitInfo(): TraitInfo
+
+    abstract fun shapeConstraintViolationDisplayMessage(shape: Shape): Writable
 }

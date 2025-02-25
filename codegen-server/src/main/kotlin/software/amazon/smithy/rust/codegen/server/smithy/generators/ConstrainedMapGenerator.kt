@@ -34,7 +34,7 @@ import software.amazon.smithy.rust.codegen.server.smithy.typeNameContainsNonPubl
  * If [unconstrainedSymbol] is provided, the `MaybeConstrained` trait is implemented for the constrained type, using the
  * [unconstrainedSymbol]'s associated type as the associated type for the trait.
  *
- * [`length` trait]: https://awslabs.github.io/smithy/1.0/spec/core/constraint-traits.html#length-trait
+ * [`length` trait]: https://smithy.io/2.0/spec/constraint-traits.html#length-trait
  */
 class ConstrainedMapGenerator(
     val codegenContext: ServerCodegenContext,
@@ -64,14 +64,16 @@ class ConstrainedMapGenerator(
         val constraintViolation = constraintViolationSymbolProvider.toSymbol(shape)
         val constrainedSymbol = symbolProvider.toSymbol(shape)
 
-        val codegenScope = arrayOf(
-            "HashMap" to RuntimeType.HashMap,
-            "KeySymbol" to constrainedShapeSymbolProvider.toSymbol(model.expectShape(shape.key.target)),
-            "ValueMemberSymbol" to constrainedShapeSymbolProvider.toSymbol(shape.value),
-            "From" to RuntimeType.From,
-            "TryFrom" to RuntimeType.TryFrom,
-            "ConstraintViolation" to constraintViolation,
-        )
+        val codegenScope =
+            arrayOf(
+                "HashMap" to RuntimeType.HashMap,
+                "KeySymbol" to constrainedShapeSymbolProvider.toSymbol(model.expectShape(shape.key.target)),
+                "ValueMemberSymbol" to constrainedShapeSymbolProvider.toSymbol(shape.value),
+                "From" to RuntimeType.From,
+                "TryFrom" to RuntimeType.TryFrom,
+                "ConstraintViolation" to constraintViolation,
+                *RuntimeType.preludeScope,
+            )
 
         writer.documentShape(shape, model)
         writer.docs(rustDocsConstrainedTypeEpilogue(name))
@@ -107,7 +109,7 @@ class ConstrainedMapGenerator(
                 type Error = #{ConstraintViolation};
 
                 /// ${rustDocsTryFromMethod(name, inner)}
-                fn try_from(value: $inner) -> Result<Self, Self::Error> {
+                fn try_from(value: $inner) -> #{Result}<Self, Self::Error> {
                     let length = value.len();
                     if ${lengthTrait.rustCondition("length")} {
                         Ok(Self(value))
@@ -134,11 +136,12 @@ class ConstrainedMapGenerator(
         ) {
             val keyShape = model.expectShape(shape.key.target, StringShape::class.java)
             val keyNeedsConversion = keyShape.typeNameContainsNonPublicType(model, symbolProvider, publicConstrainedTypes)
-            val key = if (keyNeedsConversion) {
-                "k.into()"
-            } else {
-                "k"
-            }
+            val key =
+                if (keyNeedsConversion) {
+                    "k.into()"
+                } else {
+                    "k"
+                }
 
             writer.rustTemplate(
                 """

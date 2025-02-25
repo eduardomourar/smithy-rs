@@ -10,25 +10,20 @@ extra["moduleName"] = "software.amazon.smithy.rust.kotlin.codegen.server.typescr
 tasks["jar"].enabled = false
 
 plugins {
-    id("software.amazon.smithy")
+    java
+    id("software.amazon.smithy.gradle.smithy-base")
+    id("software.amazon.smithy.gradle.smithy-jar")
 }
 
 val smithyVersion: String by project
-val defaultRustDocFlags: String by project
 val properties = PropertyRetriever(rootProject, project)
+val buildDir = layout.buildDirectory.get().asFile
 
 val pluginName = "rust-server-codegen-typescript"
 val workingDirUnderBuildDir = "smithyprojections/codegen-server-test-typescript/"
 
 configure<software.amazon.smithy.gradle.SmithyExtension> {
-    outputDirectory = file("$buildDir/$workingDirUnderBuildDir")
-}
-
-buildscript {
-    val smithyVersion: String by project
-    dependencies {
-        classpath("software.amazon.smithy:smithy-cli:$smithyVersion")
-    }
+    outputDirectory = layout.buildDirectory.dir(workingDirUnderBuildDir).get().asFile
 }
 
 dependencies {
@@ -49,11 +44,11 @@ project.registerGenerateSmithyBuildTask(rootProject, pluginName, allCodegenTests
 project.registerGenerateCargoWorkspaceTask(rootProject, pluginName, allCodegenTests, workingDirUnderBuildDir)
 project.registerGenerateCargoConfigTomlTask(buildDir.resolve(workingDirUnderBuildDir))
 
-tasks["smithyBuildJar"].dependsOn("generateSmithyBuild")
+tasks["smithyBuild"].dependsOn("generateSmithyBuild")
 tasks["assemble"].finalizedBy("generateCargoWorkspace")
 
 project.registerModifyMtimeTask()
-project.registerCargoCommandsTasks(buildDir.resolve(workingDirUnderBuildDir), defaultRustDocFlags)
+project.registerCargoCommandsTasks(buildDir.resolve(workingDirUnderBuildDir))
 
 tasks["test"].finalizedBy(cargoCommands(properties).map { it.toString })
 

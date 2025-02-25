@@ -3,11 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod adapter;
-mod default_config;
-mod list_buckets;
+#![allow(dead_code)]
 
-#[tokio::main(flavor = "current_thread")]
-pub async fn main() {
-    crate::list_buckets::s3_list_buckets().await
-}
+#[cfg(target_family = "wasm")]
+mod http_client;
+#[cfg(all(target_family = "wasm", target_env = "p1"))]
+mod wasi;

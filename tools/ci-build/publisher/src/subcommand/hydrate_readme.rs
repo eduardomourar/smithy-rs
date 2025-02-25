@@ -41,15 +41,7 @@ pub fn subcommand_hydrate_readme(
     let template = fs::read_to_string(input)
         .with_context(|| format!("Failed to read README template file at {input:?}"))?;
 
-    let mut context = json!({ "msrv": msrv });
-    for (crate_name, metadata) in versions_manifest.crates {
-        let key = format!("sdk_version_{}", crate_name.replace('-', "_"));
-        context
-            .as_object_mut()
-            .unwrap()
-            .insert(key, serde_json::Value::String(metadata.version));
-    }
-
+    let context = make_context(msrv, &versions_manifest);
     let hydrated = hydrate_template(&template, &context)?;
     fs::write(output, hydrated.as_bytes())
         .with_context(|| format!("Failed to write hydrated README to {:?}", output))?;
@@ -60,6 +52,19 @@ fn hydrate_template<C: Serialize>(template_string: &str, template_context: &C) -
     let reg = Handlebars::new();
     reg.render_template(template_string, template_context)
         .context("Failed to hydrate README template")
+}
+
+fn make_context(msrv: &str, versions_manifest: &VersionsManifest) -> serde_json::Value {
+    let mut context = json!({ "msrv": msrv });
+
+    for (crate_name, metadata) in &versions_manifest.crates {
+        let key = format!("sdk_version_{}", crate_name.replace('-', "_"));
+        context
+            .as_object_mut()
+            .unwrap()
+            .insert(key, serde_json::Value::String(metadata.version.clone()));
+    }
+    context
 }
 
 #[cfg(test)]

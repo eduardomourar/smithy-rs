@@ -10,6 +10,7 @@ import software.amazon.smithy.rust.codegen.client.smithy.ClientCodegenContext
 import software.amazon.smithy.rust.codegen.client.smithy.ClientRustModule
 import software.amazon.smithy.rust.codegen.core.rustlang.RustModule
 import software.amazon.smithy.rust.codegen.core.rustlang.RustWriter
+import software.amazon.smithy.rust.codegen.core.rustlang.Visibility
 import software.amazon.smithy.rust.codegen.core.rustlang.Writable
 import software.amazon.smithy.rust.codegen.core.rustlang.docs
 import software.amazon.smithy.rust.codegen.core.rustlang.rust
@@ -30,83 +31,188 @@ data class InfallibleEnumType(
 ) : EnumType() {
     companion object {
         /** Name of the generated unknown enum member name for enums with named members. */
-        const val UnknownVariant = "Unknown"
+        const val UNKNOWN_VARIANT = "Unknown"
 
-        /** Name of the opaque struct that is inner data for the generated [UnknownVariant]. */
-        const val UnknownVariantValue = "UnknownVariantValue"
+        /** Name of the opaque struct that is inner data for the generated [UNKNOWN_VARIANT]. */
+        const val UNKNOWN_VARIANT_VALUE = "UnknownVariantValue"
     }
 
-    override fun implFromForStr(context: EnumGeneratorContext): Writable = writable {
-        rustTemplate(
-            """
-            impl #{From}<&str> for ${context.enumName} {
-                fn from(s: &str) -> Self {
-                    match s {
-                        #{matchArms}
+    override fun implFromForStr(context: EnumGeneratorContext): Writable =
+        writable {
+            rustTemplate(
+                """
+                impl #{From}<&str> for ${context.enumName} {
+                    fn from(s: &str) -> Self {
+                        match s {
+                            #{matchArms}
+                        }
                     }
                 }
-            }
-            """,
-            "From" to RuntimeType.From,
-            "matchArms" to writable {
-                context.sortedMembers.forEach { member ->
-                    rust("${member.value.dq()} => ${context.enumName}::${member.derivedName()},")
+                """,
+                "From" to RuntimeType.From,
+                "matchArms" to
+                    writable {
+                        context.sortedMembers.forEach { member ->
+                            rust("${member.value.dq()} => ${context.enumName}::${member.derivedName()},")
+                        }
+                        rust(
+                            "other => ${context.enumName}::$UNKNOWN_VARIANT(#T(other.to_owned()))",
+                            unknownVariantValue(context),
+                        )
+                    },
+            )
+        }
+
+    override fun implFromStr(context: EnumGeneratorContext): Writable =
+        writable {
+            rustTemplate(
+                """
+                impl ::std::str::FromStr for ${context.enumName} {
+                    type Err = ::std::convert::Infallible;
+
+                    fn from_str(s: &str) -> #{Result}<Self, <Self as ::std::str::FromStr>::Err> {
+                        #{Ok}(${context.enumName}::from(s))
+                    }
                 }
-                rust(
-                    "other => ${context.enumName}::$UnknownVariant(#T(other.to_owned()))",
-                    unknownVariantValue(context),
+                """,
+                *preludeScope,
+            )
+        }
+
+    override fun implFromForStrForUnnamedEnum(context: EnumGeneratorContext): Writable =
+        writable {
+            rustTemplate(
+                """
+                impl<T> #{From}<T> for ${context.enumName} where T: #{AsRef}<str> {
+                    fn from(s: T) -> Self {
+                        ${context.enumName}(s.as_ref().to_owned())
+                    }
+                }
+                """,
+                *preludeScope,
+            )
+        }
+
+    override fun implFromStrForUnnamedEnum(context: EnumGeneratorContext): Writable =
+        writable {
+            // Add an infallible FromStr implementation for uniformity
+            rustTemplate(
+                """
+                impl ::std::str::FromStr for ${context.enumName} {
+                    type Err = ::std::convert::Infallible;
+
+                    fn from_str(s: &str) -> #{Result}<Self, <Self as ::std::str::FromStr>::Err> {
+                        #{Ok}(${context.enumName}::from(s))
+                    }
+                }
+                """,
+                *preludeScope,
+            )
+        }
+
+    override fun additionalEnumImpls(context: EnumGeneratorContext): Writable =
+        writable {
+            // `try_parse` isn't needed for unnamed enums
+            if (context.enumTrait.hasNames()) {
+                rustTemplate(
+                    """
+                    impl ${context.enumName} {
+                        /// Parses the enum value while disallowing unknown variants.
+                        ///
+                        /// Unknown variants will result in an error.
+                        pub fn try_parse(value: &str) -> #{Result}<Self, #{UnknownVariantError}> {
+                            match Self::from(value) {
+                                ##[allow(deprecated)]
+                                Self::Unknown(_) => #{Err}(#{UnknownVariantError}::new(value)),
+                                known => Ok(known),
+                            }
+                        }
+                    }
+                    """,
+                    *preludeScope,
+                    "UnknownVariantError" to unknownVariantError(),
                 )
-            },
-        )
-    }
 
-    override fun implFromStr(context: EnumGeneratorContext): Writable = writable {
-        rustTemplate(
-            """
-            impl ::std::str::FromStr for ${context.enumName} {
-                type Err = ::std::convert::Infallible;
-
-                fn from_str(s: &str) -> #{Result}<Self, <Self as ::std::str::FromStr>::Err> {
-                    #{Ok}(${context.enumName}::from(s))
-                }
+                rustTemplate(
+                    """
+                    impl #{Display} for ${context.enumName} {
+                        fn fmt(&self, f: &mut #{Fmt}::Formatter) -> #{Fmt}::Result {
+                            match self {
+                                #{matchArms}
+                            }
+                        }
+                    }
+                    """,
+                    "Display" to RuntimeType.Display,
+                    "Fmt" to RuntimeType.stdFmt,
+                    "matchArms" to
+                        writable {
+                            context.sortedMembers.forEach { member ->
+                                rust(
+                                    """
+                                    ${context.enumName}::${member.derivedName()} => write!(f, ${member.value.dq()}),
+                                    """,
+                                )
+                            }
+                            rust("""${context.enumName}::Unknown(value) => write!(f, "{}", value)""")
+                        },
+                )
             }
-            """,
-            *preludeScope,
-        )
-    }
+        }
 
-    override fun additionalDocs(context: EnumGeneratorContext): Writable = writable {
-        renderForwardCompatibilityNote(context.enumName, context.sortedMembers, UnknownVariant, UnknownVariantValue)
-    }
+    override fun additionalDocs(context: EnumGeneratorContext): Writable =
+        writable {
+            renderForwardCompatibilityNote(
+                context.enumName,
+                context.sortedMembers,
+                UNKNOWN_VARIANT,
+                UNKNOWN_VARIANT_VALUE,
+            )
+        }
 
-    override fun additionalEnumMembers(context: EnumGeneratorContext): Writable = writable {
-        docs("`$UnknownVariant` contains new variants that have been added since this code was generated.")
-        rust("$UnknownVariant(#T)", unknownVariantValue(context))
-    }
+    override fun additionalEnumMembers(context: EnumGeneratorContext): Writable =
+        writable {
+            docs("`$UNKNOWN_VARIANT` contains new variants that have been added since this code was generated.")
+            rust(
+                """##[deprecated(note = "Don't directly match on `$UNKNOWN_VARIANT`. See the docs on this enum for the correct way to handle unknown variants.")]""",
+            )
+            rust("$UNKNOWN_VARIANT(#T)", unknownVariantValue(context))
+        }
 
-    override fun additionalAsStrMatchArms(context: EnumGeneratorContext): Writable = writable {
-        rust("${context.enumName}::$UnknownVariant(value) => value.as_str()")
-    }
+    override fun additionalAsStrMatchArms(context: EnumGeneratorContext): Writable =
+        writable {
+            rust("${context.enumName}::$UNKNOWN_VARIANT(value) => value.as_str()")
+        }
 
     private fun unknownVariantValue(context: EnumGeneratorContext): RuntimeType {
-        return RuntimeType.forInlineFun(UnknownVariantValue, unknownVariantModule) {
+        return RuntimeType.forInlineFun(UNKNOWN_VARIANT_VALUE, unknownVariantModule) {
             docs(
                 """
                 Opaque struct used as inner data for the `Unknown` variant defined in enums in
-                the crate
+                the crate.
 
-                While this is not intended to be used directly, it is marked as `pub` because it is
-                part of the enums that are public interface.
+                This is not intended to be used directly.
                 """.trimIndent(),
             )
             context.enumMeta.render(this)
-            rustTemplate("struct $UnknownVariantValue(pub(crate) #{String});", *preludeScope)
-            rustBlock("impl $UnknownVariantValue") {
+            rustTemplate("struct $UNKNOWN_VARIANT_VALUE(pub(crate) #{String});", *preludeScope)
+            rustBlock("impl $UNKNOWN_VARIANT_VALUE") {
                 // The generated as_str is not pub as we need to prevent users from calling it on this opaque struct.
                 rustBlock("pub(crate) fn as_str(&self) -> &str") {
                     rust("&self.0")
                 }
             }
+            rustTemplate(
+                """
+                impl #{Display} for $UNKNOWN_VARIANT_VALUE {
+                    fn fmt(&self, f: &mut #{Fmt}::Formatter) -> #{Fmt}::Result {
+                        write!(f, "{}", self.0)
+                    }
+                }
+                """,
+                "Display" to RuntimeType.Display,
+                "Fmt" to RuntimeType.stdFmt,
+            )
         }
     }
 
@@ -115,8 +221,10 @@ data class InfallibleEnumType(
      * forward-compatible way.
      */
     private fun RustWriter.renderForwardCompatibilityNote(
-        enumName: String, sortedMembers: List<EnumMemberModel>,
-        unknownVariant: String, unknownVariantValue: String,
+        enumName: String,
+        sortedMembers: List<EnumMemberModel>,
+        unknownVariant: String,
+        unknownVariantValue: String,
     ) {
         docs(
             """
@@ -166,6 +274,7 @@ data class InfallibleEnumType(
             - It might inadvertently shadow other intended match arms.
             """.trimIndent(),
         )
+        docs("")
     }
 }
 
@@ -174,5 +283,36 @@ class ClientEnumGenerator(codegenContext: ClientCodegenContext, shape: StringSha
         codegenContext.model,
         codegenContext.symbolProvider,
         shape,
-        InfallibleEnumType(ClientRustModule.Primitives),
+        InfallibleEnumType(
+            RustModule.new(
+                "sealed_enum_unknown",
+                visibility = Visibility.PUBCRATE,
+                parent = ClientRustModule.primitives,
+            ),
+        ),
     )
+
+private fun unknownVariantError(): RuntimeType =
+    RuntimeType.forInlineFun("UnknownVariantError", ClientRustModule.Error) {
+        rustTemplate(
+            """
+            /// The given enum value failed to parse since it is not a known value.
+            ##[derive(Debug)]
+            pub struct UnknownVariantError {
+                value: #{String},
+            }
+            impl UnknownVariantError {
+                pub(crate) fn new(value: impl #{Into}<#{String}>) -> Self {
+                    Self { value: value.into() }
+                }
+            }
+            impl ::std::fmt::Display for UnknownVariantError {
+                fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> #{Result}<(), ::std::fmt::Error> {
+                    write!(f, "unknown enum variant: '{}'", self.value)
+                }
+            }
+            impl ::std::error::Error for UnknownVariantError {}
+            """,
+            *preludeScope,
+        )
+    }

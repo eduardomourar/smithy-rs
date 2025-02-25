@@ -1,14 +1,14 @@
 [package]
 name = "aws-smithy-checksums"
-version = "0.0.0-smithy-rs-head"
+version = "0.63.0"
 authors = [
-  "AWS Rust SDK Team <aws-sdk-rust@amazon.com>",
-  "Zelda Hessler <zhessler@amazon.com>",
+    "AWS Rust SDK Team <aws-sdk-rust@amazon.com>",
+    "Zelda Hessler <zhessler@amazon.com>",
 ]
 description = "Checksum calculation and verification callbacks"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/awslabs/smithy-rs"
+repository = "https://github.com/smithy-lang/smithy-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -16,7 +16,7 @@ repository = "https://github.com/awslabs/smithy-rs"
 aws-smithy-http = { path = "../aws-smithy-http" }
 aws-smithy-types = { path = "../aws-smithy-types" }
 bytes = "1"
-crc32c = "0.6"
+crc32c = "0.6.8"
 crc32fast = "1.3"
 hex = "0.4.3"
 http = "0.2.8"
@@ -26,6 +26,7 @@ pin-project-lite = "0.2.9"
 sha1 = "0.10"
 sha2 = "0.10"
 tracing = "0.1"
+crc64fast-nvme = "1.2.0"
 
 [dev-dependencies]
 bytes-utils = "0.1.2"
@@ -36,5 +37,6 @@ tracing-test = "0.2.1"
 [package.metadata.docs.rs]
 all-features = true
 targets = ["x86_64-unknown-linux-gnu"]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 rustdoc-args = ["--cfg", "docsrs"]
 # End of docs.rs metadata

@@ -31,13 +31,15 @@ import software.amazon.smithy.rust.codegen.server.smithy.ServerRustModule.Output
 open class ServerRootGenerator(
     val protocol: ServerProtocol,
     private val codegenContext: ServerCodegenContext,
+    private val isConfigBuilderFallible: Boolean,
 ) {
     private val index = TopDownIndex.of(codegenContext.model)
-    private val operations = index.getContainedOperations(codegenContext.serviceShape).toSortedSet(
-        compareBy {
-            it.id
-        },
-    ).toList()
+    private val operations =
+        index.getContainedOperations(codegenContext.serviceShape).toSortedSet(
+            compareBy {
+                it.id
+            },
+        ).toList()
     private val serviceName = codegenContext.serviceShape.id.name.toPascalCase()
 
     fun documentation(writer: RustWriter) {
@@ -51,11 +53,14 @@ open class ServerRootGenerator(
         val crateName = codegenContext.moduleUseName()
         val builderName = "${serviceName}Builder"
         val hasErrors = operations.any { it.errors.isNotEmpty() }
-        val handlers: Writable = operations
-            .map { operation ->
-                DocHandlerGenerator(codegenContext, operation, builderFieldNames[operation]!!, "//!").docSignature()
-            }
-            .join("//!\n")
+        val handlers: Writable =
+            operations
+                .map { operation ->
+                    DocHandlerGenerator(codegenContext, operation, builderFieldNames[operation]!!, "//!").docSignature()
+                }
+                .join("//!\n")
+
+        val unwrapConfigBuilder = if (isConfigBuilderFallible) ".expect(\"config failed to build\")" else ""
 
         writer.rustTemplate(
             """
@@ -64,7 +69,14 @@ open class ServerRootGenerator(
             //! ## Using $serviceName
             //!
             //! The primary entrypoint is [`$serviceName`]: it satisfies the [`Service<http::Request, Response = http::Response>`](#{Tower}::Service)
-            //! trait and therefore can be handed to a [`hyper` server](https://github.com/hyperium/hyper) via [`$serviceName::into_make_service`] or used in Lambda via [`LambdaHandler`](#{SmithyHttpServer}::routing::LambdaHandler).
+            //! trait and therefore can be handed to a [`hyper` server](https://github.com/hyperium/hyper) via [`$serviceName::into_make_service`]
+            //! or used in AWS Lambda
+            ##![cfg_attr(
+                feature = "aws-lambda",
+                doc = " via [`LambdaHandler`](crate::server::routing::LambdaHandler).")]
+            ##![cfg_attr(
+                not(feature = "aws-lambda"),
+                doc = " by enabling the `aws-lambda` feature flag and utilizing the `LambdaHandler`.")]
             //! The [`crate::${InputModule.name}`], ${if (!hasErrors) "and " else ""}[`crate::${OutputModule.name}`], ${if (hasErrors) "and [`crate::${ErrorModule.name}`]" else "" }
             //! modules provide the types used in each operation.
             //!
@@ -73,9 +85,12 @@ open class ServerRootGenerator(
             //! ```rust,no_run
             //! ## use std::net::SocketAddr;
             //! ## async fn dummy() {
-            //! use $crateName::$serviceName;
+            //! use $crateName::{$serviceName, ${serviceName}Config};
             //!
-            //! ## let app = $serviceName::builder_without_plugins().build_unchecked();
+            //! ## let app = $serviceName::builder(
+            //! ##     ${serviceName}Config::builder()
+            //! ##         .build()$unwrapConfigBuilder
+            //! ## ).build_unchecked();
             //! let server = app.into_make_service();
             //! let bind: SocketAddr = "127.0.0.1:6969".parse()
             //!     .expect("unable to parse the server bind address and port");
@@ -85,14 +100,15 @@ open class ServerRootGenerator(
             //!
             //! ###### Running on Lambda
             //!
-            //! This requires the `aws-lambda` feature flag to be passed to the [`#{SmithyHttpServer}`] crate.
-            //!
             //! ```rust,ignore
-            //! use #{SmithyHttpServer}::routing::LambdaHandler;
+            //! use $crateName::server::routing::LambdaHandler;
             //! use $crateName::$serviceName;
             //!
             //! ## async fn dummy() {
-            //! ## let app = $serviceName::builder_without_plugins().build_unchecked();
+            //! ## let app = $serviceName::builder(
+            //! ##     ${serviceName}Config::builder()
+            //! ##         .build()$unwrapConfigBuilder
+            //! ## ).build_unchecked();
             //! let handler = LambdaHandler::new(app);
             //! lambda_http::run(handler).await.unwrap();
             //! ## }
@@ -100,43 +116,41 @@ open class ServerRootGenerator(
             //!
             //! ## Building the $serviceName
             //!
-            //! To construct [`$serviceName`] we use [`$builderName`] returned by [`$serviceName::builder_without_plugins`]
-            //! or [`$serviceName::builder_with_plugins`].
+            //! To construct [`$serviceName`] we use [`$builderName`] returned by [`$serviceName::builder`].
             //!
             //! #### Plugins
             //!
-            //! The [`$serviceName::builder_with_plugins`] method, returning [`$builderName`],
-            //! accepts a plugin marked with [`HttpMarker`](aws_smithy_http_server::plugin::HttpMarker) and a 
-            //! plugin marked with [`ModelMarker`](aws_smithy_http_server::plugin::ModelMarker).
+            //! The [`$serviceName::builder`] method, returning [`$builderName`],
+            //! accepts a config object on which plugins can be registered.
             //! Plugins allow you to build middleware which is aware of the operation it is being applied to.
             //!
-            //! ```rust
-            //! ## use #{SmithyHttpServer}::plugin::IdentityPlugin;
-            //! ## use #{SmithyHttpServer}::plugin::IdentityPlugin as LoggingPlugin;
-            //! ## use #{SmithyHttpServer}::plugin::IdentityPlugin as MetricsPlugin;
+            //! ```rust,no_run
+            //! ## use $crateName::server::plugin::IdentityPlugin as LoggingPlugin;
+            //! ## use $crateName::server::plugin::IdentityPlugin as MetricsPlugin;
             //! ## use #{Hyper}::Body;
-            //! use #{SmithyHttpServer}::plugin::HttpPlugins;
-            //! use $crateName::{$serviceName, $builderName};
+            //! use $crateName::server::plugin::HttpPlugins;
+            //! use $crateName::{$serviceName, ${serviceName}Config, $builderName};
             //!
             //! let http_plugins = HttpPlugins::new()
             //!         .push(LoggingPlugin)
             //!         .push(MetricsPlugin);
-            //! let builder: $builderName<Body, _, _> = $serviceName::builder_with_plugins(http_plugins, IdentityPlugin);
+            //! let config = ${serviceName}Config::builder().build()$unwrapConfigBuilder;
+            //! let builder: $builderName<Body, _, _, _> = $serviceName::builder(config);
             //! ```
             //!
-            //! Check out [`#{SmithyHttpServer}::plugin`] to learn more about plugins.
+            //! Check out [`crate::server::plugin`] to learn more about plugins.
             //!
             //! #### Handlers
             //!
             //! [`$builderName`] provides a setter method for each operation in your Smithy model. The setter methods expect an async function as input, matching the signature for the corresponding operation in your Smithy model.
             //! We call these async functions **handlers**. This is where your application business logic lives.
             //!
-            //! Every handler must take an `Input`, and optional [`extractor arguments`](#{SmithyHttpServer}::request), while returning:
+            //! Every handler must take an `Input`, and optional [`extractor arguments`](crate::server::request), while returning:
             //!
             //! * A `Result<Output, Error>` if your operation has modeled errors, or
             //! * An `Output` otherwise.
             //!
-            //! ```rust
+            //! ```rust,no_run
             //! ## struct Input;
             //! ## struct Output;
             //! ## struct Error;
@@ -147,13 +161,13 @@ open class ServerRootGenerator(
             //!
             //! Handlers can accept up to 8 extractors:
             //!
-            //! ```rust
+            //! ```rust,no_run
             //! ## struct Input;
             //! ## struct Output;
             //! ## struct Error;
             //! ## struct State;
             //! ## use std::net::SocketAddr;
-            //! use #{SmithyHttpServer}::request::{extension::Extension, connect_info::ConnectInfo};
+            //! use $crateName::server::request::{extension::Extension, connect_info::ConnectInfo};
             //!
             //! async fn handler_with_no_extensions(input: Input) -> Output {
             //!     todo!()
@@ -172,7 +186,7 @@ open class ServerRootGenerator(
             //! }
             //! ```
             //!
-            //! See the [`operation module`](#{SmithyHttpServer}::operation) for information on precisely what constitutes a handler.
+            //! See the [`operation module`](crate::operation) for information on precisely what constitutes a handler.
             //!
             //! #### Build
             //!
@@ -185,13 +199,14 @@ open class ServerRootGenerator(
             //!
             //! ## Example
             //!
-            //! ```rust
+            //! ```rust,no_run
             //! ## use std::net::SocketAddr;
-            //! use $crateName::$serviceName;
+            //! use $crateName::{$serviceName, ${serviceName}Config};
             //!
             //! ##[#{Tokio}::main]
             //! pub async fn main() {
-            //!    let app = $serviceName::builder_without_plugins()
+            //!    let config = ${serviceName}Config::builder().build()$unwrapConfigBuilder;
+            //!    let app = $serviceName::builder(config)
             ${builderFieldNames.values.joinToString("\n") { "//!        .$it($it)" }}
             //!        .build()
             //!        .expect("failed to build an instance of $serviceName");
@@ -223,7 +238,6 @@ open class ServerRootGenerator(
             "HandlerImports" to handlerImports(crateName, operations, commentToken = "//!"),
             "Handlers" to handlers,
             "ExampleHandler" to operations.take(1).map { operation -> DocHandlerGenerator(codegenContext, operation, builderFieldNames[operation]!!, "//!").docSignature() },
-            "SmithyHttpServer" to ServerCargoDependency.smithyHttpServer(codegenContext.runtimeConfig).toType(),
             "Hyper" to ServerCargoDependency.HyperDev.toType(),
             "Tokio" to ServerCargoDependency.TokioDev.toType(),
             "Tower" to ServerCargoDependency.Tower.toType(),
@@ -237,6 +251,24 @@ open class ServerRootGenerator(
     fun render(rustWriter: RustWriter) {
         documentation(rustWriter)
 
-        rustWriter.rust("pub use crate::service::{$serviceName, ${serviceName}Builder, MissingOperationsError};")
+        // Only export config builder error if fallible.
+        val configErrorReExport =
+            if (isConfigBuilderFallible) {
+                "${serviceName}ConfigError,"
+            } else {
+                ""
+            }
+        rustWriter.rust(
+            """
+            pub use crate::service::{
+                $serviceName,
+                ${serviceName}Config,
+                ${serviceName}ConfigBuilder,
+                $configErrorReExport
+                ${serviceName}Builder,
+                MissingOperationsError
+            };
+            """,
+        )
     }
 }

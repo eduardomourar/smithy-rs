@@ -13,7 +13,8 @@ use super::RestXml;
 
 pub use crate::protocol::rest::router::*;
 
-/// An AWS REST routing error.
+// TODO(https://github.com/smithy-lang/smithy/issues/2348): We're probably non-compliant here, but
+// we have no tests to pin our implemenation against!
 impl IntoResponse<RestXml> for Error {
     fn into_response(self) -> http::Response<BoxBody> {
         match self {
@@ -24,7 +25,7 @@ impl IntoResponse<RestXml> for Error {
                     UNKNOWN_OPERATION_EXCEPTION.to_string(),
                 ))
                 .body(empty())
-                .expect("invalid HTTP response for REST XML routing error; please file a bug report under https://github.com/awslabs/smithy-rs/issues"),
+                .expect("invalid HTTP response for REST XML routing error; please file a bug report under https://github.com/smithy-lang/smithy-rs/issues"),
             Error::MethodNotAllowed => method_disallowed(),
         }
     }

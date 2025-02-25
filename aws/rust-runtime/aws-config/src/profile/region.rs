@@ -6,6 +6,7 @@
 //! Load a region from an AWS profile
 
 use crate::meta::region::{future, ProvideRegion};
+#[allow(deprecated)]
 use crate::profile::profile_file::ProfileFiles;
 use crate::profile::ProfileSet;
 use crate::provider_config::ProviderConfig;
@@ -45,6 +46,7 @@ pub struct ProfileFileRegionProvider {
 pub struct Builder {
     config: Option<ProviderConfig>,
     profile_override: Option<String>,
+    #[allow(deprecated)]
     profile_files: Option<ProfileFiles>,
 }
 
@@ -62,6 +64,7 @@ impl Builder {
     }
 
     /// Set the profile file that should be used by the [`ProfileFileRegionProvider`]
+    #[allow(deprecated)]
     pub fn profile_files(mut self, profile_files: ProfileFiles) -> Self {
         self.profile_files = Some(profile_files);
         self
@@ -157,9 +160,9 @@ impl ProvideRegion for ProfileFileRegionProvider {
 mod test {
     use crate::profile::ProfileFileRegionProvider;
     use crate::provider_config::ProviderConfig;
-    use crate::test_case::no_traffic_connector;
-    use aws_sdk_sts::config::Region;
+    use crate::test_case::no_traffic_client;
     use aws_types::os_shim_internal::{Env, Fs};
+    use aws_types::region::Region;
     use futures_util::FutureExt;
     use tracing_test::traced_test;
 
@@ -169,7 +172,7 @@ mod test {
         ProviderConfig::empty()
             .with_fs(fs)
             .with_env(env)
-            .with_http_connector(no_traffic_connector())
+            .with_http_client(no_traffic_client())
     }
 
     #[traced_test]
@@ -244,7 +247,7 @@ role_arn = arn:aws:iam::123456789012:role/test
         let provider_config = ProviderConfig::empty()
             .with_fs(fs)
             .with_env(env)
-            .with_http_connector(no_traffic_connector());
+            .with_http_client(no_traffic_client());
 
         assert_eq!(
             Some(Region::new("us-east-1")),

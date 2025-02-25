@@ -59,6 +59,12 @@ abstract class EnumType {
     /** Returns a writable that implements `FromStr` for the enum */
     abstract fun implFromStr(context: EnumGeneratorContext): Writable
 
+    /** Returns a writable that implements `From<&str>` and/or `TryFrom<&str>` for the unnamed enum */
+    abstract fun implFromForStrForUnnamedEnum(context: EnumGeneratorContext): Writable
+
+    /** Returns a writable that implements `FromStr` for the unnamed enum */
+    abstract fun implFromStrForUnnamedEnum(context: EnumGeneratorContext): Writable
+
     /** Optionally adds additional documentation to the `enum` docs */
     open fun additionalDocs(context: EnumGeneratorContext): Writable = writable {}
 
@@ -88,7 +94,7 @@ class EnumMemberModel(
          *
          * Ordinarily, the symbol provider would determine this name, but the enum trait doesn't allow for this.
          *
-         * TODO(https://github.com/awslabs/smithy-rs/issues/1700): Remove this function when refactoring to EnumShape.
+         * TODO(https://github.com/smithy-lang/smithy-rs/issues/1700): Remove this function when refactoring to EnumShape.
          */
         @Deprecated("This function will go away when we handle EnumShape instead of EnumTrait")
         fun toEnumVariantName(
@@ -138,7 +144,10 @@ class EnumMemberModel(
     }
 }
 
-private fun RustWriter.docWithNote(doc: String?, note: String?) {
+private fun RustWriter.docWithNote(
+    doc: String?,
+    note: String?,
+) {
     if (doc.isNullOrBlank() && note.isNullOrBlank()) {
         // If the model doesn't have any documentation for the shape, then suppress the missing docs lint
         // since the lack of documentation is a modeling issue rather than a codegen issue.
@@ -147,7 +156,7 @@ private fun RustWriter.docWithNote(doc: String?, note: String?) {
         doc?.also { docs(escape(it)) }
         note?.also {
             // Add a blank line between the docs and the note to visually differentiate
-            doc?.also { write("///") }
+            write("///")
             docs("_Note: ${it}_")
         }
     }
@@ -161,17 +170,18 @@ open class EnumGenerator(
 ) {
     companion object {
         /** Name of the function on the enum impl to get a vec of value names */
-        const val Values = "values"
+        const val VALUES = "values"
     }
 
     private val enumTrait: EnumTrait = shape.expectTrait()
     private val symbol: Symbol = symbolProvider.toSymbol(shape)
-    private val context = EnumGeneratorContext(
-        enumName = symbol.name,
-        enumMeta = symbol.expectRustMetadata(),
-        enumTrait = enumTrait,
-        sortedMembers = enumTrait.values.sortedBy { it.value }.map { EnumMemberModel(shape, it, symbolProvider) },
-    )
+    private val context =
+        EnumGeneratorContext(
+            enumName = symbol.name,
+            enumMeta = symbol.expectRustMetadata(),
+            enumTrait = enumTrait,
+            sortedMembers = enumTrait.values.sortedBy { it.value }.map { EnumMemberModel(shape, it, symbolProvider) },
+        )
 
     fun render(writer: RustWriter) {
         enumType.additionalEnumAttributes(context).forEach { attribute ->
@@ -200,14 +210,15 @@ open class EnumGenerator(
         insertTrailingNewline()
         // impl Blah { pub fn as_str(&self) -> &str
         implBlock(
-            asStrImpl = writable {
-                rustBlock("match self") {
-                    context.sortedMembers.forEach { member ->
-                        rust("""${context.enumName}::${member.derivedName()} => ${member.value.dq()},""")
+            asStrImpl =
+                writable {
+                    rustBlock("match self") {
+                        context.sortedMembers.forEach { member ->
+                            rust("""${context.enumName}::${member.derivedName()} => ${member.value.dq()},""")
+                        }
+                        enumType.additionalAsStrMatchArms(context)(this)
                     }
-                    enumType.additionalAsStrMatchArms(context)(this)
-                }
-            },
+                },
         )
         rustTemplate(
             """
@@ -227,21 +238,15 @@ open class EnumGenerator(
         context.enumMeta.render(this)
         rust("struct ${context.enumName}(String);")
         implBlock(
-            asStrImpl = writable {
-                rust("&self.0")
-            },
+            asStrImpl =
+                writable {
+                    rust("&self.0")
+                },
         )
-
-        rustTemplate(
-            """
-            impl<T> #{From}<T> for ${context.enumName} where T: #{AsRef}<str> {
-                fn from(s: T) -> Self {
-                    ${context.enumName}(s.as_ref().to_owned())
-                }
-            }
-            """,
-            *preludeScope,
-        )
+        // impl From<str> for Blah { ... }
+        enumType.implFromForStrForUnnamedEnum(context)(this)
+        // impl FromStr for Blah { ... }
+        enumType.implFromStrForUnnamedEnum(context)(this)
     }
 
     private fun RustWriter.renderEnum() {
@@ -274,15 +279,16 @@ open class EnumGenerator(
                     #{asStrImpl:W}
                 }
                 /// Returns all the `&str` representations of the enum members.
-                pub const fn $Values() -> &'static [&'static str] {
+                pub const fn $VALUES() -> &'static [&'static str] {
                     &[#{Values:W}]
                 }
             }
             """,
             "asStrImpl" to asStrImpl,
-            "Values" to writable {
-                rust(context.sortedMembers.joinToString(", ") { it.value.dq() })
-            },
+            "Values" to
+                writable {
+                    rust(context.sortedMembers.joinToString(", ") { it.value.dq() })
+                },
         )
     }
 

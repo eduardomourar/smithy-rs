@@ -1,10 +1,10 @@
-Smithy Rust [![CI on Branch `main`](https://github.com/awslabs/smithy-rs/actions/workflows/ci-main.yml/badge.svg)](https://github.com/awslabs/smithy-rs/actions/workflows/ci-main.yml)
+Smithy Rust [![CI on Branch `main`](https://github.com/smithy-lang/smithy-rs/actions/workflows/ci-main.yml/badge.svg)](https://github.com/smithy-lang/smithy-rs/actions/workflows/ci-main.yml)
 ==================================================================================
 
 Smithy code generators for Rust that generate clients, servers, and the entire AWS SDK.
 The latest unreleased SDK build can be found in [aws-sdk-rust/next](https://github.com/awslabs/aws-sdk-rust/tree/next).
 
-[Design documentation](https://awslabs.github.io/smithy-rs/design)
+[Design documentation](https://smithy-lang.github.io/smithy-rs/design/)
 
 **All internal and external interfaces are considered unstable and subject to change without notice.**
 
@@ -30,7 +30,8 @@ Project Layout
 * `aws`: AWS specific codegen & Rust code (signing, endpoints, customizations, etc.)
   Common commands:
   * `./gradlew :aws:sdk:assemble`: Generate (but do not test / compile etc.) a fresh SDK into `sdk/build/aws-sdk`
-  * `./gradlew :aws:sdk:test`: Generate & run all tests for a fresh SDK
+  * `./gradlew :aws:sdk:sdkTest`: Generate & run all tests for a fresh SDK. (Note that these tests require Go to be
+  installed for FIP support to compile properly)
   * `./gradlew :aws:sdk:{cargoCheck, cargoTest, cargoDocs, cargoClippy}`: Generate & run specified cargo command.
 * `codegen-core`: Common code generation logic useful for clients and servers
 * `codegen-client`: Whitelabel Smithy client code generation
@@ -123,7 +124,7 @@ to generate more or less AWS service clients.
 # Generate an SDK, but do not attempt to compile / run tests. Useful for inspecting generated code
 ./gradlew :aws:sdk:assemble
 # Run all the tests
-./gradlew :aws:sdk:test
+./gradlew :aws:sdk:sdkTest
 # Validate that the generated code compiles
 ./gradlew :aws:sdk:cargoCheck
 # Validate that the generated code passes Clippy

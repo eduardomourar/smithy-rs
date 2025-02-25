@@ -5,7 +5,6 @@
 
 package software.amazon.smithy.rust.codegen.server.smithy.generators.http
 
-import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.model.shapes.OperationShape
 import software.amazon.smithy.rust.codegen.core.rustlang.RustType
 import software.amazon.smithy.rust.codegen.core.rustlang.RustWriter
@@ -20,12 +19,12 @@ import software.amazon.smithy.rust.codegen.core.smithy.generators.http.HttpBindi
 import software.amazon.smithy.rust.codegen.core.smithy.generators.http.HttpMessageType
 import software.amazon.smithy.rust.codegen.core.smithy.mapRustType
 import software.amazon.smithy.rust.codegen.core.smithy.protocols.HttpBindingDescriptor
-import software.amazon.smithy.rust.codegen.core.smithy.protocols.Protocol
 import software.amazon.smithy.rust.codegen.server.smithy.ServerCodegenContext
+import software.amazon.smithy.rust.codegen.server.smithy.generators.protocol.ServerProtocol
 import software.amazon.smithy.rust.codegen.server.smithy.targetCanReachConstrainedShape
 
 class ServerRequestBindingGenerator(
-    protocol: Protocol,
+    val protocol: ServerProtocol,
     codegenContext: ServerCodegenContext,
     operationShape: OperationShape,
     additionalHttpBindingCustomizations: List<HttpBindingCustomization> = listOf(),
@@ -34,6 +33,8 @@ class ServerRequestBindingGenerator(
         HttpBindingGenerator(
             protocol,
             codegenContext,
+            // Note how we parse the HTTP-bound values into _unconstrained_ types; they will be constrained when
+            // building the builder.
             codegenContext.unconstrainedShapeSymbolProvider,
             operationShape,
             listOf(
@@ -48,18 +49,17 @@ class ServerRequestBindingGenerator(
 
     fun generateDeserializePayloadFn(
         binding: HttpBindingDescriptor,
-        errorSymbol: Symbol,
         structuredHandler: RustWriter.(String) -> Unit,
-    ): RuntimeType = httpBindingGenerator.generateDeserializePayloadFn(
-        binding,
-        errorSymbol,
-        structuredHandler,
-        HttpMessageType.REQUEST,
-    )
+    ): RuntimeType =
+        httpBindingGenerator.generateDeserializePayloadFn(
+            binding,
+            protocol.deserializePayloadErrorType(binding).toSymbol(),
+            structuredHandler,
+            HttpMessageType.REQUEST,
+        )
 
-    fun generateDeserializePrefixHeadersFn(
-        binding: HttpBindingDescriptor,
-    ): RuntimeType = httpBindingGenerator.generateDeserializePrefixHeaderFn(binding)
+    fun generateDeserializePrefixHeadersFn(binding: HttpBindingDescriptor): RuntimeType =
+        httpBindingGenerator.generateDeserializePrefixHeaderFn(binding)
 }
 
 /**
@@ -68,20 +68,22 @@ class ServerRequestBindingGenerator(
  */
 class ServerRequestAfterDeserializingIntoAHashMapOfHttpPrefixHeadersWrapInUnconstrainedMapHttpBindingCustomization(val codegenContext: ServerCodegenContext) :
     HttpBindingCustomization() {
-    override fun section(section: HttpBindingSection): Writable = when (section) {
-        is HttpBindingSection.BeforeRenderingHeaderValue,
-        is HttpBindingSection.BeforeIteratingOverMapShapeBoundWithHttpPrefixHeaders,
-        -> emptySection
-        is HttpBindingSection.AfterDeserializingIntoAHashMapOfHttpPrefixHeaders -> writable {
-            if (section.memberShape.targetCanReachConstrainedShape(codegenContext.model, codegenContext.unconstrainedShapeSymbolProvider)) {
-                rust(
-                    "let out = out.map(#T);",
-                    codegenContext.unconstrainedShapeSymbolProvider.toSymbol(section.memberShape).mapRustType {
-                        it.stripOuter<RustType.Option>()
-                    },
-                )
-            }
+    override fun section(section: HttpBindingSection): Writable =
+        when (section) {
+            is HttpBindingSection.BeforeRenderingHeaderValue,
+            is HttpBindingSection.BeforeIteratingOverMapShapeBoundWithHttpPrefixHeaders,
+            -> emptySection
+            is HttpBindingSection.AfterDeserializingIntoAHashMapOfHttpPrefixHeaders ->
+                writable {
+                    if (section.memberShape.targetCanReachConstrainedShape(codegenContext.model, codegenContext.unconstrainedShapeSymbolProvider)) {
+                        rust(
+                            "let out = out.map(#T);",
+                            codegenContext.unconstrainedShapeSymbolProvider.toSymbol(section.memberShape).mapRustType {
+                                it.stripOuter<RustType.Option>()
+                            },
+                        )
+                    }
+                }
+            else -> emptySection
         }
-        else -> emptySection
-    }
 }

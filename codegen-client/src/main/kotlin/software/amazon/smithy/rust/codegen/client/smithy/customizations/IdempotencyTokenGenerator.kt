@@ -19,12 +19,14 @@ import software.amazon.smithy.rust.codegen.core.rustlang.toType
 import software.amazon.smithy.rust.codegen.core.rustlang.writable
 import software.amazon.smithy.rust.codegen.core.smithy.CodegenContext
 import software.amazon.smithy.rust.codegen.core.smithy.RuntimeType.Companion.preludeScope
+import software.amazon.smithy.rust.codegen.core.smithy.isOptional
+import software.amazon.smithy.rust.codegen.core.util.UNREACHABLE
 import software.amazon.smithy.rust.codegen.core.util.findMemberWithTrait
 import software.amazon.smithy.rust.codegen.core.util.inputShape
 
 class IdempotencyTokenGenerator(
     codegenContext: CodegenContext,
-    operationShape: OperationShape,
+    private val operationShape: OperationShape,
 ) : OperationCustomization() {
     private val model = codegenContext.model
     private val runtimeConfig = codegenContext.runtimeConfig
@@ -37,30 +39,43 @@ class IdempotencyTokenGenerator(
             return emptySection
         }
         val memberName = symbolProvider.toMemberName(idempotencyTokenMember)
+        val codegenScope =
+            arrayOf(
+                *preludeScope,
+                "Input" to symbolProvider.toSymbol(inputShape),
+                "IdempotencyTokenRuntimePlugin" to
+                    InlineDependency.forRustFile(
+                        RustModule.pubCrate("client_idempotency_token", parent = ClientRustModule.root),
+                        "/inlineable/src/client_idempotency_token.rs",
+                        CargoDependency.smithyRuntimeApiClient(runtimeConfig),
+                        CargoDependency.smithyTypes(runtimeConfig),
+                        InlineDependency.idempotencyToken(runtimeConfig),
+                    ).toType().resolve("IdempotencyTokenRuntimePlugin"),
+            )
+
         return when (section) {
-            is OperationSection.AdditionalRuntimePlugins -> writable {
-                section.addOperationRuntimePlugin(this) {
-                    rustTemplate(
-                        """
-                        #{IdempotencyTokenRuntimePlugin}::new(|token_provider, input| {
-                            let input: &mut #{Input} = input.downcast_mut().expect("correct type");
-                            if input.$memberName.is_none() {
-                                input.$memberName = #{Some}(token_provider.make_idempotency_token());
-                            }
-                        })
-                        """,
-                        *preludeScope,
-                        "Input" to symbolProvider.toSymbol(inputShape),
-                        "IdempotencyTokenRuntimePlugin" to
-                            InlineDependency.forRustFile(
-                                RustModule.pubCrate("client_idempotency_token", parent = ClientRustModule.root),
-                                "/inlineable/src/client_idempotency_token.rs",
-                                CargoDependency.smithyRuntimeApi(runtimeConfig),
-                                CargoDependency.smithyTypes(runtimeConfig),
-                            ).toType().resolve("IdempotencyTokenRuntimePlugin"),
-                    )
+            is OperationSection.AdditionalRuntimePlugins ->
+                writable {
+                    section.addOperationRuntimePlugin(this) {
+                        if (!symbolProvider.toSymbol(idempotencyTokenMember).isOptional()) {
+                            UNREACHABLE("top level input members are always optional. $operationShape")
+                        }
+                        // An idempotency token is optional. If the user didn't specify a token
+                        // then we'll generate one and set it.
+                        rustTemplate(
+                            """
+                            #{IdempotencyTokenRuntimePlugin}::new(|token_provider, input| {
+                                let input: &mut #{Input} = input.downcast_mut().expect("correct type");
+                                if input.$memberName.is_none() {
+                                    input.$memberName = #{Some}(token_provider.make_idempotency_token());
+                                }
+                            })
+                            """,
+                            *codegenScope,
+                        )
+                    }
                 }
-            }
+
             else -> emptySection
         }
     }

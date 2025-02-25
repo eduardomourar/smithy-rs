@@ -10,10 +10,11 @@ set -eux
 pushd aws-sdk-smoketest &>/dev/null
 
 # Override "fail on warning" for smoke test docs since DynamoDB's modeled docs cause rustdoc warnings
-RUSTDOCFLAGS="" cargo doc --no-deps --document-private-items --all-features
+RUSTDOCFLAGS="--cfg docsrs" cargo +"${RUST_NIGHTLY_VERSION}" doc --no-deps --document-private-items --all-features
 
 cargo clippy --all-features
-cargo +"${RUST_NIGHTLY_VERSION}" udeps
+# running `cargo hack` runs this in the prod workspace and ensures that each crate is run individually
+cargo +"${RUST_NIGHTLY_VERSION}" hack udeps --all-features
 popd &>/dev/null
 
 # Move the smoketest artifacts into smithy-rs and check the integration tests

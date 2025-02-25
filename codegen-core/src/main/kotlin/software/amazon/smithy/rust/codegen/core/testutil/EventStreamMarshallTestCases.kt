@@ -23,8 +23,9 @@ object EventStreamMarshallTestCases {
     ) {
         val generator = "crate::event_stream_serde::TestStreamMarshaller"
 
-        val protocolTestHelpers = CargoDependency.smithyProtocolTestHelpers(TestRuntimeConfig)
-            .copy(scope = DependencyScope.Compile)
+        val protocolTestHelpers =
+            CargoDependency.smithyProtocolTestHelpers(TestRuntimeConfig)
+                .copy(scope = DependencyScope.Compile)
 
         fun builderInput(
             @Language("Rust", prefix = "macro_rules! foo { () =>  {{\n", suffix = "\n}}}")
@@ -35,7 +36,8 @@ object EventStreamMarshallTestCases {
         val typesModule = codegenContext.symbolProvider.moduleForShape(codegenContext.model.lookup("test#TestStruct"))
         rustTemplate(
             """
-            use aws_smithy_eventstream::frame::{Message, Header, HeaderValue, MarshallMessage};
+            use aws_smithy_eventstream::frame::MarshallMessage;
+            use aws_smithy_types::event_stream::{Message, Header, HeaderValue};
             use std::collections::HashMap;
             use aws_smithy_types::{Blob, DateTime};
             use ${typesModule.fullyQualifiedPath()}::*;
@@ -109,7 +111,7 @@ object EventStreamMarshallTestCases {
                 let headers = headers_to_map(message.headers());
                 assert_eq!(&str_header("event"), *headers.get(":message-type").unwrap());
                 assert_eq!(&str_header("MessageWithStruct"), *headers.get(":event-type").unwrap());
-                assert_eq!(&str_header(${testCase.requestContentType.dq()}), *headers.get(":content-type").unwrap());
+                assert_eq!(&str_header(${testCase.eventStreamMessageContentType.dq()}), *headers.get(":content-type").unwrap());
 
                 validate_body(
                     message.payload(),
@@ -144,7 +146,7 @@ object EventStreamMarshallTestCases {
                 let headers = headers_to_map(message.headers());
                 assert_eq!(&str_header("event"), *headers.get(":message-type").unwrap());
                 assert_eq!(&str_header("MessageWithUnion"), *headers.get(":event-type").unwrap());
-                assert_eq!(&str_header(${testCase.requestContentType.dq()}), *headers.get(":content-type").unwrap());
+                assert_eq!(&str_header(${testCase.eventStreamMessageContentType.dq()}), *headers.get(":content-type").unwrap());
 
                 validate_body(
                     message.payload(),
@@ -234,7 +236,7 @@ object EventStreamMarshallTestCases {
                 let headers = headers_to_map(message.headers());
                 assert_eq!(&str_header("event"), *headers.get(":message-type").unwrap());
                 assert_eq!(&str_header("MessageWithNoHeaderPayloadTraits"), *headers.get(":event-type").unwrap());
-                assert_eq!(&str_header(${testCase.requestContentType.dq()}), *headers.get(":content-type").unwrap());
+                assert_eq!(&str_header(${testCase.eventStreamMessageContentType.dq()}), *headers.get(":content-type").unwrap());
 
                 validate_body(
                     message.payload(),

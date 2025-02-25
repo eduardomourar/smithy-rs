@@ -24,7 +24,6 @@
 
 use std::{fs::File, future, io::BufReader, net::SocketAddr, sync::Arc};
 
-use aws_smithy_http_server::AddExtensionLayer;
 use clap::Parser;
 use futures_util::stream::StreamExt;
 use tokio_rustls::{
@@ -33,10 +32,14 @@ use tokio_rustls::{
 };
 
 use pokemon_service_common::{
-    capture_pokemon, check_health, do_nothing, get_pokemon_species, get_server_statistics,
-    get_storage, setup_tracing, stream_pokemon_radio, State,
+    capture_pokemon, check_health, get_pokemon_species, get_server_statistics, get_storage,
+    setup_tracing, stream_pokemon_radio, State,
 };
-use pokemon_service_server_sdk::PokemonService;
+use pokemon_service_server_sdk::{
+    input, output,
+    server::{request::connect_info::ConnectInfo, routing::Connected, AddExtensionLayer},
+    PokemonService, PokemonServiceConfig,
+};
 use pokemon_service_tls::{DEFAULT_ADDRESS, DEFAULT_PORT, DEFAULT_TEST_CERT, DEFAULT_TEST_KEY};
 
 #[derive(Parser, Debug)]
@@ -56,12 +59,56 @@ struct Args {
     tls_key_path: String,
 }
 
+/// Information derived from the TLS connection.
+#[derive(Debug, Clone)]
+pub struct TlsConnectInfo {
+    /// The remote peer address of this connection.
+    pub socket_addr: SocketAddr,
+
+    /// The set of TLS certificates presented by the peer in this connection.
+    pub certs: Option<Arc<Vec<Certificate>>>,
+}
+
+impl Connected<&tokio_rustls::server::TlsStream<hyper::server::conn::AddrStream>>
+    for TlsConnectInfo
+{
+    fn connect_info(
+        target: &tokio_rustls::server::TlsStream<hyper::server::conn::AddrStream>,
+    ) -> Self {
+        let (addr_stream, session) = target.get_ref();
+        let socket_addr = addr_stream.remote_addr();
+
+        let certs = session
+            .peer_certificates()
+            .map(|certs| Arc::new(certs.to_vec()));
+
+        TlsConnectInfo { socket_addr, certs }
+    }
+}
+
+/// Empty operation used to showcase how we can get access to information derived from the TLS
+/// connection in.
+pub async fn do_nothing_with_tls_connect_info(
+    _input: input::DoNothingInput,
+    ConnectInfo(tls_connect_info): ConnectInfo<TlsConnectInfo>,
+) -> output::DoNothingOutput {
+    // Logging these might pose a security concern! You probably don't want to do this in
+    // production.
+    tracing::debug!(?tls_connect_info.certs, "peer TLS certificates");
+
+    output::DoNothingOutput {}
+}
+
 #[tokio::main]
 pub async fn main() {
     let args = Args::parse();
     setup_tracing();
 
-    let app = PokemonService::builder_without_plugins()
+    let config = PokemonServiceConfig::builder()
+        // Set up shared state and middlewares.
+        .layer(AddExtensionLayer::new(Arc::new(State::default())))
+        .build();
+    let app = PokemonService::builder(config)
         // Build a registry containing implementations to all the operations in the service. These
         // are async functions or async closures that take as input the operation's input and
         // return the operation's output.
@@ -69,13 +116,11 @@ pub async fn main() {
         .get_storage(get_storage)
         .get_server_statistics(get_server_statistics)
         .capture_pokemon(capture_pokemon)
-        .do_nothing(do_nothing)
+        .do_nothing(do_nothing_with_tls_connect_info)
         .check_health(check_health)
         .stream_pokemon_radio(stream_pokemon_radio)
         .build()
-        .expect("failed to build an instance of PokemonService")
-        // Set up shared state and middlewares.
-        .layer(&AddExtensionLayer::new(Arc::new(State::default())));
+        .expect("failed to build an instance of PokemonService");
 
     let addr: SocketAddr = format!("{}:{}", args.address, args.port)
         .parse()
@@ -86,6 +131,7 @@ pub async fn main() {
         acceptor,
         hyper::server::conn::AddrIncoming::bind(&addr).expect("could not bind"),
     )
+    .connections()
     .filter(|conn| {
         if let Err(err) = conn {
             eprintln!("connection error: {:?}", err);
@@ -94,8 +140,11 @@ pub async fn main() {
             future::ready(true)
         }
     });
-    let server = hyper::Server::builder(hyper::server::accept::from_stream(listener))
-        .serve(app.into_make_service());
+    // Using `into_make_service_with_connect_info`, rather than `into_make_service`, to adjoin the `TlsConnectInfo`
+    // connection info.
+    let make_app = app.into_make_service_with_connect_info::<TlsConnectInfo>();
+    let server =
+        hyper::Server::builder(hyper::server::accept::from_stream(listener)).serve(make_app);
     if let Err(err) = server.await {
         eprintln!("server error: {}", err);
     }

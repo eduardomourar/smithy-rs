@@ -30,26 +30,45 @@ fun Writable.map(f: RustWriter.(Writable) -> Unit): Writable {
     return writable { f(self) }
 }
 
+/** Returns Some(..arg) */
+fun Writable.some(): Writable {
+    return this.map { rust("Some(#T)", it) }
+}
+
 fun Writable.isNotEmpty(): Boolean = !this.isEmpty()
 
-operator fun Writable.plus(other: Writable): Writable {
-    val first = this
-    return writable {
-        rustTemplate("#{First:W}#{Second:W}", "First" to first, "Second" to other)
+operator fun Writable.plus(other: Writable): Writable =
+    writable {
+        this@plus(this)
+        other(this)
     }
-}
 
 /**
  * Helper allowing a `Iterable<Writable>` to be joined together using a `String` separator.
+ * @param separator The string to use as a separator between elements
+ * @param prefix An optional string to prepend to the entire joined sequence (defaults to null)
+ * @return A Writable containing the optionally prefixed, joined elements
  */
-fun Iterable<Writable>.join(separator: String) = join(writable(separator))
+fun Iterable<Writable>.join(
+    separator: String,
+    prefix: String? = null,
+) = join(writable(separator), prefix?.let { writable(it) })
 
 /**
  * Helper allowing a `Iterable<Writable>` to be joined together using a `Writable` separator.
+ * @param separator The Writable to use as a separator between elements
+ * @param prefix An optional Writable to prepend to the entire joined sequence (defaults to null)
+ * @return A Writable containing the optionally prefixed, joined elements
  */
-fun Iterable<Writable>.join(separator: Writable): Writable {
+fun Iterable<Writable>.join(
+    separator: Writable,
+    prefix: Writable? = null,
+): Writable {
     val iter = this.iterator()
     return writable {
+        if (iter.hasNext() && prefix != null) {
+            prefix()
+        }
         iter.forEach { value ->
             value()
             if (iter.hasNext()) {
@@ -90,41 +109,43 @@ fun Array<Writable>.join(separator: Writable) = asIterable().join(separator)
  *     "type_params" to rustTypeParameters(
  *         symbolProvider.toSymbol(operation),
  *         RustType.Unit,
- *         runtimeConfig.smithyHttp().resolve("body::SdkBody"),
+ *         runtimeConfig.smithyTypes().resolve("body::SdkBody"),
  *         GenericsGenerator(GenericTypeArg("A"), GenericTypeArg("B")),
  *     )
  * )
  * ```
  * would write out something like:
  * ```rust
- * some_fn::<crate::operation::SomeOperation, (), aws_smithy_http::body::SdkBody, A, B>();
+ * some_fn::<crate::operation::SomeOperation, (), aws_smithy_types::body::SdkBody, A, B>();
  * ```
  */
-fun rustTypeParameters(
-    vararg typeParameters: Any,
-): Writable = writable {
-    if (typeParameters.isNotEmpty()) {
-        val items = typeParameters.map { typeParameter ->
-            writable {
-                when (typeParameter) {
-                    is Symbol, is RuntimeType, is RustType -> rustInlineTemplate("#{it}", "it" to typeParameter)
-                    is String -> rustInlineTemplate(typeParameter)
-                    is RustGenerics -> rustInlineTemplate(
-                        "#{gg:W}",
-                        "gg" to typeParameter.declaration(withAngleBrackets = false),
-                    )
+fun rustTypeParameters(vararg typeParameters: Any): Writable =
+    writable {
+        if (typeParameters.isNotEmpty()) {
+            val items =
+                typeParameters.map { typeParameter ->
+                    writable {
+                        when (typeParameter) {
+                            is Symbol, is RuntimeType, is RustType -> rustInlineTemplate("#{it}", "it" to typeParameter)
+                            is String -> rustInlineTemplate(typeParameter)
+                            is RustGenerics ->
+                                rustInlineTemplate(
+                                    "#{gg:W}",
+                                    "gg" to typeParameter.declaration(withAngleBrackets = false),
+                                )
 
-                    else -> {
-                        // Check if it's a writer. If it is, invoke it; Else, throw a codegen error.
-                        @Suppress("UNCHECKED_CAST")
-                        val func = typeParameter as? Writable
-                            ?: throw CodegenException("Unhandled type '$typeParameter' encountered by rustTypeParameters writer")
-                        func.invoke(this)
+                            else -> {
+                                // Check if it's a writer. If it is, invoke it; Else, throw a codegen error.
+                                @Suppress("UNCHECKED_CAST")
+                                val func =
+                                    typeParameter as? Writable
+                                        ?: throw CodegenException("Unhandled type '$typeParameter' encountered by rustTypeParameters writer")
+                                func.invoke(this)
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        rustInlineTemplate("<#{Items:W}>", "Items" to items.join(", "))
+            rustInlineTemplate("<#{Items:W}>", "Items" to items.join(", "))
+        }
     }
-}

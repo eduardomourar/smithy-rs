@@ -10,29 +10,28 @@ extra["moduleName"] = "software.amazon.smithy.rust.kotlin.codegen.server.test"
 tasks["jar"].enabled = false
 
 plugins {
-    id("software.amazon.smithy")
+    java
+    id("software.amazon.smithy.gradle.smithy-base")
+    id("software.amazon.smithy.gradle.smithy-jar")
 }
 
 val smithyVersion: String by project
-val defaultRustDocFlags: String by project
 val properties = PropertyRetriever(rootProject, project)
 
 val pluginName = "rust-server-codegen"
 val workingDirUnderBuildDir = "smithyprojections/codegen-server-test/"
 
-buildscript {
-    val smithyVersion: String by project
-    dependencies {
-        classpath("software.amazon.smithy:smithy-cli:$smithyVersion")
-    }
-}
-
 dependencies {
     implementation(project(":codegen-server"))
     implementation("software.amazon.smithy:smithy-aws-protocol-tests:$smithyVersion")
+    implementation("software.amazon.smithy:smithy-protocol-tests:$smithyVersion")
     implementation("software.amazon.smithy:smithy-protocol-test-traits:$smithyVersion")
     implementation("software.amazon.smithy:smithy-aws-traits:$smithyVersion")
     implementation("software.amazon.smithy:smithy-validation-model:$smithyVersion")
+}
+
+smithy {
+    format.set(false)
 }
 
 val allCodegenTests = "../codegen-core/common-test-models".let { commonModels ->
@@ -45,6 +44,12 @@ val allCodegenTests = "../codegen-core/common-test-models".let { commonModels ->
             imports = listOf("$commonModels/naming-obstacle-course-structs.smithy"),
         ),
         CodegenTest("com.amazonaws.simple#SimpleService", "simple", imports = listOf("$commonModels/simple.smithy")),
+        CodegenTest("smithy.protocoltests.rpcv2Cbor#RpcV2Protocol", "rpcv2Cbor"),
+        CodegenTest(
+            "smithy.protocoltests.rpcv2Cbor#RpcV2CborService",
+            "rpcv2Cbor_extras",
+            imports = listOf("$commonModels/rpcv2Cbor-extras.smithy")
+        ),
         CodegenTest(
             "com.amazonaws.constraints#ConstraintsService",
             "constraints_without_public_constrained_types",
@@ -71,7 +76,7 @@ val allCodegenTests = "../codegen-core/common-test-models".let { commonModels ->
             "aws.protocoltests.restjson.validation#RestJsonValidation",
             "rest_json_validation",
             // `@range` trait is used on floating point shapes, which we deliberately don't want to support.
-            // See https://github.com/awslabs/smithy-rs/issues/1401.
+            // See https://github.com/smithy-lang/smithy-rs/issues/1401.
             extraConfig = """, "codegen": { "ignoreUnsupportedConstraints": true } """,
         ),
         CodegenTest("aws.protocoltests.json10#JsonRpc10", "json_rpc10"),
@@ -98,13 +103,13 @@ val allCodegenTests = "../codegen-core/common-test-models".let { commonModels ->
 
 project.registerGenerateSmithyBuildTask(rootProject, pluginName, allCodegenTests)
 project.registerGenerateCargoWorkspaceTask(rootProject, pluginName, allCodegenTests, workingDirUnderBuildDir)
-project.registerGenerateCargoConfigTomlTask(buildDir.resolve(workingDirUnderBuildDir))
+project.registerGenerateCargoConfigTomlTask(layout.buildDirectory.dir(workingDirUnderBuildDir).get().asFile)
 
-tasks["smithyBuildJar"].dependsOn("generateSmithyBuild")
+tasks["smithyBuild"].dependsOn("generateSmithyBuild")
 tasks["assemble"].finalizedBy("generateCargoWorkspace", "generateCargoConfigToml")
 
 project.registerModifyMtimeTask()
-project.registerCargoCommandsTasks(buildDir.resolve(workingDirUnderBuildDir), defaultRustDocFlags)
+project.registerCargoCommandsTasks(layout.buildDirectory.dir(workingDirUnderBuildDir).get().asFile)
 
 tasks["test"].finalizedBy(cargoCommands(properties).map { it.toString })
 

@@ -10,9 +10,9 @@ use crate::date_time::format::DateTimeParseErrorKind;
 use num_integer::div_mod_floor;
 use num_integer::Integer;
 use std::cmp::Ordering;
-use std::convert::TryFrom;
 use std::error::Error as StdError;
 use std::fmt;
+use std::fmt::Display;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -38,12 +38,11 @@ const NANOS_PER_SECOND_U32: u32 = 1_000_000_000;
 /// DateTime in time represented as seconds and sub-second nanos since
 /// the Unix epoch (January 1, 1970 at midnight UTC/GMT).
 ///
-/// This type can be converted to/from the standard library's [`SystemTime`](std::time::SystemTime):
+/// This type can be converted to/from the standard library's [`SystemTime`]:
 /// ```rust
 /// # fn doc_fn() -> Result<(), aws_smithy_types::date_time::ConversionError> {
 /// # use aws_smithy_types::date_time::DateTime;
 /// # use std::time::SystemTime;
-/// use std::convert::TryFrom;
 ///
 /// let the_millennium_as_system_time = SystemTime::try_from(DateTime::from_secs(946_713_600))?;
 /// let now_as_date_time = DateTime::from(SystemTime::now());
@@ -54,7 +53,7 @@ const NANOS_PER_SECOND_U32: u32 = 1_000_000_000;
 /// The [`aws-smithy-types-convert`](https://crates.io/crates/aws-smithy-types-convert) crate
 /// can be used for conversions to/from other libraries, such as
 /// [`time`](https://crates.io/crates/time) or [`chrono`](https://crates.io/crates/chrono).
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub struct DateTime {
     pub(crate) seconds: i64,
     /// Subsecond nanos always advances the wallclock time, even for times where seconds is negative
@@ -109,12 +108,21 @@ impl DateTime {
     ///     DateTime::from_fractional_secs(1, 0.5),
     /// );
     /// ```
-    pub fn from_fractional_secs(epoch_seconds: i64, fraction: f64) -> Self {
-        let subsecond_nanos = (fraction * 1_000_000_000_f64) as u32;
+    pub fn from_fractional_secs(mut epoch_seconds: i64, fraction: f64) -> Self {
+        // Because of floating point issues, `fraction` can end up being 1.0 leading to
+        // a full second of subsecond nanos. In that case, rollover the subsecond into the second.
+        let mut subsecond_nanos = (fraction * 1_000_000_000_f64) as u32;
+        if subsecond_nanos == 1_000_000_000 {
+            epoch_seconds += 1;
+            subsecond_nanos = 0;
+        }
         DateTime::from_secs_and_nanos(epoch_seconds, subsecond_nanos)
     }
 
     /// Creates a `DateTime` from a number of seconds and sub-second nanos since the Unix epoch.
+    ///
+    /// # Panics
+    /// This function will panic if `subsecond_nanos` is >= 1_000_000_000
     ///
     /// # Example
     /// ```
@@ -329,6 +337,23 @@ impl Ord for DateTime {
     }
 }
 
+impl Display for DateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Some dates are out of range to be serialized with `DateTime`.
+        // In these cases, fallback to using epoch seconds which always works
+        let date = match self.fmt(Format::DateTime) {
+            Ok(date) => date,
+            Err(_err) => format::epoch_seconds::format(self),
+        };
+        write!(f, "{}", date)
+    }
+}
+
+impl fmt::Debug for DateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
 /// Failure to convert a `DateTime` to or from another type.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -367,10 +392,39 @@ mod test {
     use crate::date_time::Format;
     use crate::DateTime;
     use proptest::proptest;
-    use std::convert::TryFrom;
     use std::time::SystemTime;
     use time::format_description::well_known::Rfc3339;
     use time::OffsetDateTime;
+
+    #[test]
+    fn test_display_date_time() {
+        let date_time = DateTime::from_secs(1576540098);
+        assert_eq!(format!("{}", date_time), "2019-12-16T23:48:18Z");
+
+        let date_time = DateTime::from_fractional_secs(1576540098, 0.52);
+        assert_eq!(format!("{}", date_time), "2019-12-16T23:48:18.52Z");
+
+        let date_time = DateTime::from_secs(1699942527);
+        assert_eq!(format!("{}", date_time), "2023-11-14T06:15:27Z");
+
+        let date_time = DateTime::from_secs(16995123);
+        assert_eq!(format!("{}", date_time), "1970-07-16T16:52:03Z");
+    }
+
+    #[test]
+    fn test_debug_date_time() {
+        let date_time = DateTime::from_secs(1576540098);
+        assert_eq!(format!("{:?}", date_time), "2019-12-16T23:48:18Z");
+
+        let date_time = DateTime::from_fractional_secs(1576540098, 0.52);
+        assert_eq!(format!("{:?}", date_time), "2019-12-16T23:48:18.52Z");
+
+        let date_time = DateTime::from_secs(1699942527);
+        assert_eq!(format!("{:?}", date_time), "2023-11-14T06:15:27Z");
+
+        let date_time = DateTime::from_secs(16995123);
+        assert_eq!(format!("{:?}", date_time), "1970-07-16T16:52:03Z");
+    }
 
     #[test]
     fn test_fmt() {
@@ -396,7 +450,7 @@ mod test {
         );
         assert_eq!(
             date_time.fmt(Format::HttpDate).unwrap(),
-            "Mon, 16 Dec 2019 23:48:18.52 GMT"
+            "Mon, 16 Dec 2019 23:48:18 GMT"
         );
     }
 
@@ -566,7 +620,7 @@ mod test {
         assert!(DateTime::from_nanos(10_000_000_000_000_000_000_999_999_999_i128).is_err());
     }
 
-    // TODO(https://github.com/awslabs/smithy-rs/issues/1857)
+    // TODO(https://github.com/smithy-lang/smithy-rs/issues/1857)
     #[cfg(not(any(target_arch = "powerpc", target_arch = "x86")))]
     #[test]
     fn system_time_conversions() {
@@ -584,6 +638,13 @@ mod test {
             SystemTime::from(off_date_time),
             SystemTime::try_from(date_time).unwrap()
         );
+    }
+
+    #[test]
+    fn formatting_of_early_dates() {
+        let date: DateTime =
+            DateTime::from_str("Mon, 16 Dec -019 23:48:18 GMT", Format::HttpDate).unwrap();
+        assert_eq!(format!("{}", date), "-62736509502");
     }
 
     #[test]
@@ -625,6 +686,17 @@ mod test {
         assert!(fifth == fifth);
     }
 
+    /// https://github.com/smithy-lang/smithy-rs/issues/3805
+    #[test]
+    fn panic_in_fromsecs_f64() {
+        assert_eq!(DateTime::from_secs_f64(-1.0), DateTime::from_secs(-1));
+
+        assert_eq!(
+            DateTime::from_secs_f64(-1.95877825437922e-309),
+            DateTime::from_secs(0)
+        );
+    }
+
     const MIN_RFC_3339_MILLIS: i64 = -62135596800000;
     const MAX_RFC_3339_MILLIS: i64 = 253402300799999;
 
@@ -642,6 +714,13 @@ mod test {
             let right_str = right.fmt(Format::DateTime).unwrap();
 
             assert_eq!(left.cmp(&right), left_str.cmp(&right_str));
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn from_secs_f64_proptest(secs: f64) {
+            let _date = DateTime::from_secs_f64(secs);
         }
     }
 }

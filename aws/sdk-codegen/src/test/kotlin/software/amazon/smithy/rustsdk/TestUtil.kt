@@ -6,10 +6,11 @@
 package software.amazon.smithy.rustsdk
 
 import software.amazon.smithy.model.Model
-import software.amazon.smithy.model.node.BooleanNode
 import software.amazon.smithy.model.node.ObjectNode
 import software.amazon.smithy.rust.codegen.client.smithy.ClientCodegenContext
 import software.amazon.smithy.rust.codegen.client.smithy.ClientRustSettings
+import software.amazon.smithy.rust.codegen.client.smithy.RustClientCodegenPlugin
+import software.amazon.smithy.rust.codegen.client.testutil.ClientDecoratableBuildPlugin
 import software.amazon.smithy.rust.codegen.client.testutil.clientIntegrationTest
 import software.amazon.smithy.rust.codegen.client.testutil.testClientCodegenContext
 import software.amazon.smithy.rust.codegen.client.testutil.testClientRustSettings
@@ -22,37 +23,53 @@ import java.io.File
 
 // In aws-sdk-codegen, the working dir when gradle runs tests is actually `./aws`. So, to find the smithy runtime, we need
 // to go up one more level
-val AwsTestRuntimeConfig = TestRuntimeConfig.copy(
-    runtimeCrateLocation = run {
-        val path = File("../../rust-runtime")
-        check(path.exists()) { "$path must exist to generate a working SDK" }
-        RuntimeCrateLocation.Path(path.absolutePath)
-    },
-)
-
-fun awsTestCodegenContext(model: Model? = null, settings: ClientRustSettings? = null) =
-    testClientCodegenContext(
-        model ?: "namespace test".asSmithyModel(),
-        settings = settings ?: testClientRustSettings(runtimeConfig = AwsTestRuntimeConfig),
+val AwsTestRuntimeConfig =
+    TestRuntimeConfig.copy(
+        runtimeCrateLocation =
+            run {
+                val path = File("../../rust-runtime")
+                check(path.exists()) { "$path must exist to generate a working SDK" }
+                RuntimeCrateLocation.path(path.absolutePath)
+            },
     )
+
+fun awsTestCodegenContext(
+    model: Model? = null,
+    settings: ClientRustSettings? = null,
+) = testClientCodegenContext(
+    model ?: "namespace test".asSmithyModel(),
+    settings = settings ?: testClientRustSettings(runtimeConfig = AwsTestRuntimeConfig),
+)
 
 fun awsSdkIntegrationTest(
     model: Model,
+    params: IntegrationTestParams = awsIntegrationTestParams(),
+    buildPlugin: ClientDecoratableBuildPlugin = RustClientCodegenPlugin(),
+    environment: Map<String, String> = mapOf(),
     test: (ClientCodegenContext, RustCrate) -> Unit = { _, _ -> },
-) =
-    clientIntegrationTest(
-        model,
-        IntegrationTestParams(
-            cargoCommand = "cargo test --features test-util",
-            runtimeConfig = AwsTestRuntimeConfig,
-            additionalSettings = ObjectNode.builder().withMember(
+) = clientIntegrationTest(
+    model,
+    params,
+    buildPlugin = buildPlugin,
+    environment = environment,
+    test = test,
+)
+
+fun awsIntegrationTestParams() =
+    IntegrationTestParams(
+        cargoCommand = "cargo test --features test-util,behavior-version-latest --tests --lib",
+        runtimeConfig = AwsTestRuntimeConfig,
+        additionalSettings =
+            ObjectNode.builder().withMember(
                 "customizationConfig",
                 ObjectNode.builder()
                     .withMember(
                         "awsSdk",
                         ObjectNode.builder()
-                            .withMember("generateReadme", false)
+                            .withMember("awsSdkBuild", true)
+                            .withMember("suppressReadme", true)
                             .withMember("integrationTestPath", "../sdk/integration-tests")
+                            .withMember("partitionsConfigPath", "../sdk/aws-models/sdk-partitions.json")
                             .build(),
                     ).build(),
             )
@@ -60,9 +77,7 @@ fun awsSdkIntegrationTest(
                     "codegen",
                     ObjectNode.builder()
                         .withMember("includeFluentClient", false)
-                        .withMember("includeEndpointUrlConfig", BooleanNode.from(false))
+                        .withMember("includeEndpointUrlConfig", false)
                         .build(),
                 ).build(),
-        ),
-        test = test,
     )

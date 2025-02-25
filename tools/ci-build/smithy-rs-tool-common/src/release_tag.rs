@@ -13,7 +13,7 @@ use std::str::FromStr;
 
 lazy_static! {
     static ref VERSION_TAG: Regex = Regex::new(r"^v(\d+)\.(\d+)\.(\d+)$").unwrap();
-    static ref DATE_TAG: Regex = Regex::new(r"^release-(\d{4}-\d{2}-\d{2})$").unwrap();
+    static ref DATE_TAG: Regex = Regex::new(r"^release-(\d{4}-\d{2}-\d{2})(.(\d+))?$").unwrap();
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -25,6 +25,7 @@ pub struct VersionReleaseTag {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DateReleaseTag {
     date: String,
+    suffix: Option<usize>,
     original: String,
 }
 
@@ -66,6 +67,7 @@ impl FromStr for ReleaseTag {
         } else if let Some(caps) = DATE_TAG.captures(value) {
             Ok(ReleaseTag::Date(DateReleaseTag {
                 date: caps.get(1).expect("validated by regex").as_str().into(),
+                suffix: caps.get(3).map(|s| usize::from_str(s.as_str()).unwrap()),
                 original: value.into(),
             }))
         } else {
@@ -85,21 +87,20 @@ impl fmt::Display for ReleaseTag {
 
 impl Ord for ReleaseTag {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other)
-            .expect("Tag::partial_cmp never returns None")
+        match (self, other) {
+            (ReleaseTag::Date(_), ReleaseTag::Version(_)) => Ordering::Greater,
+            (ReleaseTag::Version(_), ReleaseTag::Date(_)) => Ordering::Less,
+            (ReleaseTag::Date(lhs), ReleaseTag::Date(rhs)) => {
+                lhs.date.cmp(&rhs.date).then(lhs.suffix.cmp(&rhs.suffix))
+            }
+            (ReleaseTag::Version(lhs), ReleaseTag::Version(rhs)) => lhs.version.cmp(&rhs.version),
+        }
     }
 }
 
 impl PartialOrd for ReleaseTag {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match (self, other) {
-            (ReleaseTag::Date(_), ReleaseTag::Version(_)) => Some(Ordering::Greater),
-            (ReleaseTag::Version(_), ReleaseTag::Date(_)) => Some(Ordering::Less),
-            (ReleaseTag::Date(lhs), ReleaseTag::Date(rhs)) => Some(lhs.date.cmp(&rhs.date)),
-            (ReleaseTag::Version(lhs), ReleaseTag::Version(rhs)) => {
-                Some(lhs.version.cmp(&rhs.version))
-            }
-        }
+        Some(self.cmp(other))
     }
 }
 
@@ -125,8 +126,18 @@ mod tests {
             ReleaseTag::Date(DateReleaseTag {
                 date: "2022-07-26".into(),
                 original: "release-2022-07-26".into(),
+                suffix: None
             }),
             tag("release-2022-07-26")
+        );
+
+        assert_eq!(
+            ReleaseTag::Date(DateReleaseTag {
+                date: "2022-07-26".into(),
+                original: "release-2022-07-26.2".into(),
+                suffix: Some(2)
+            }),
+            tag("release-2022-07-26.2")
         );
 
         assert!(ReleaseTag::from_str("foo").is_err());
@@ -140,6 +151,10 @@ mod tests {
         assert!(tag("release-2022-07-20") < tag("release-2022-07-26"));
         assert!(tag("release-2022-06-20") < tag("release-2022-07-01"));
         assert!(tag("release-2021-06-20") < tag("release-2022-06-20"));
+        assert!(tag("release-2022-06-20") < tag("release-2022-06-20.2"));
+        assert!(tag("release-2022-06-20.2") < tag("release-2022-06-20.3"));
+        assert!(tag("release-2022-06-20.1") < tag("release-2022-06-20.10"));
+        assert!(tag("release-2022-06-20.10") < tag("release-2022-06-20.11"));
     }
 
     #[test]
@@ -148,6 +163,10 @@ mod tests {
         assert_eq!(
             "release-2022-07-26",
             format!("{}", tag("release-2022-07-26"))
+        );
+        assert_eq!(
+            "release-2022-07-26.2",
+            format!("{}", tag("release-2022-07-26.2"))
         );
     }
 }

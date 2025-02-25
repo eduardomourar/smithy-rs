@@ -26,10 +26,10 @@ pub enum Error {
     MethodNotAllowed,
 }
 
-/// A [`Router`] supporting [`AWS REST JSON 1.0`] and [`AWS REST XML`] protocols.
+/// A [`Router`] supporting [AWS restJson1] and [AWS restXml] protocols.
 ///
-/// [AWS REST JSON 1.0]: https://awslabs.github.io/smithy/2.0/aws/protocols/aws-restjson1-protocol.html
-/// [AWS REST XML]: https://awslabs.github.io/smithy/2.0/aws/protocols/aws-restxml-protocol.html
+/// [AWS restJson1]: https://awslabs.github.io/smithy/2.0/aws/protocols/aws-restjson1-protocol.html
+/// [AWS restXml]: https://awslabs.github.io/smithy/2.0/aws/protocols/aws-restxml-protocol.html
 #[derive(Debug, Clone)]
 pub struct RestRouter<S> {
     routes: Vec<(RequestSpec, S)>,
@@ -95,10 +95,7 @@ where
 impl<S> FromIterator<(RequestSpec, S)> for RestRouter<S> {
     #[inline]
     fn from_iter<T: IntoIterator<Item = (RequestSpec, S)>>(iter: T) -> Self {
-        let mut routes: Vec<(RequestSpec, S)> = iter
-            .into_iter()
-            .map(|(request_spec, svc)| (request_spec, svc))
-            .collect();
+        let mut routes: Vec<(RequestSpec, S)> = iter.into_iter().collect();
 
         // Sort them once by specificity, with the more specific routes sorted before the less
         // specific ones, so that when routing a request we can simply iterate through the routes
@@ -167,10 +164,7 @@ mod tests {
         ];
 
         // Test both RestJson1 and RestXml routers.
-        let router: RestRouter<_> = request_specs
-            .into_iter()
-            .map(|(spec, svc_name)| (spec, svc_name))
-            .collect();
+        let router: RestRouter<_> = request_specs.into_iter().collect();
 
         let hits = vec![
             ("A", Method::GET, "/a/b/c"),
@@ -255,10 +249,7 @@ mod tests {
             ),
         ];
 
-        let router: RestRouter<_> = request_specs
-            .into_iter()
-            .map(|(spec, svc_name)| (spec, svc_name))
-            .collect();
+        let router: RestRouter<_> = request_specs.into_iter().collect();
 
         let hits = vec![
             ("A1", Method::GET, "/a/foo"),

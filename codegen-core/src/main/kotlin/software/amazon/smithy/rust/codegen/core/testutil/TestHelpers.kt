@@ -8,6 +8,7 @@ package software.amazon.smithy.rust.codegen.core.testutil
 import software.amazon.smithy.codegen.core.Symbol
 import software.amazon.smithy.model.Model
 import software.amazon.smithy.model.knowledge.NullableIndex
+import software.amazon.smithy.model.loader.ModelDiscovery
 import software.amazon.smithy.model.shapes.OperationShape
 import software.amazon.smithy.model.shapes.ServiceShape
 import software.amazon.smithy.model.shapes.Shape
@@ -21,6 +22,7 @@ import software.amazon.smithy.rust.codegen.core.rustlang.RustReservedWordConfig
 import software.amazon.smithy.rust.codegen.core.rustlang.RustReservedWordSymbolProvider
 import software.amazon.smithy.rust.codegen.core.rustlang.RustReservedWords
 import software.amazon.smithy.rust.codegen.core.rustlang.Visibility
+import software.amazon.smithy.rust.codegen.core.rustlang.Writable
 import software.amazon.smithy.rust.codegen.core.rustlang.implBlock
 import software.amazon.smithy.rust.codegen.core.smithy.BaseSymbolMetadataProvider
 import software.amazon.smithy.rust.codegen.core.smithy.CodegenContext
@@ -36,6 +38,8 @@ import software.amazon.smithy.rust.codegen.core.smithy.RustSymbolProvider
 import software.amazon.smithy.rust.codegen.core.smithy.RustSymbolProviderConfig
 import software.amazon.smithy.rust.codegen.core.smithy.SymbolVisitor
 import software.amazon.smithy.rust.codegen.core.smithy.generators.BuilderGenerator
+import software.amazon.smithy.rust.codegen.core.smithy.generators.BuilderInstantiator
+import software.amazon.smithy.rust.codegen.core.smithy.generators.StructSettings
 import software.amazon.smithy.rust.codegen.core.smithy.generators.StructureGenerator
 import software.amazon.smithy.rust.codegen.core.smithy.module
 import software.amazon.smithy.rust.codegen.core.smithy.traits.SyntheticInputTrait
@@ -47,7 +51,7 @@ import software.amazon.smithy.rust.codegen.core.util.toSnakeCase
 import java.io.File
 
 val TestRuntimeConfig =
-    RuntimeConfig(runtimeCrateLocation = RuntimeCrateLocation.Path(File("../rust-runtime/").absolutePath))
+    RuntimeConfig(runtimeCrateLocation = RuntimeCrateLocation.path(File("../rust-runtime/").absolutePath))
 
 /**
  * IMPORTANT: You shouldn't need to refer to these directly in code or tests. They are private for a reason.
@@ -65,15 +69,19 @@ private object CodegenCoreTestModules {
     val OperationsTestModule = RustModule.public("test_operation")
 
     object TestModuleProvider : ModuleProvider {
-        override fun moduleForShape(context: ModuleProviderContext, shape: Shape): RustModule.LeafModule =
+        override fun moduleForShape(
+            context: ModuleProviderContext,
+            shape: Shape,
+        ): RustModule.LeafModule =
             when (shape) {
                 is OperationShape -> OperationsTestModule
-                is StructureShape -> when {
-                    shape.hasTrait<ErrorTrait>() -> ErrorsTestModule
-                    shape.hasTrait<SyntheticInputTrait>() -> InputsTestModule
-                    shape.hasTrait<SyntheticOutputTrait>() -> OutputsTestModule
-                    else -> ModelsTestModule
-                }
+                is StructureShape ->
+                    when {
+                        shape.hasTrait<ErrorTrait>() -> ErrorsTestModule
+                        shape.hasTrait<SyntheticInputTrait>() -> InputsTestModule
+                        shape.hasTrait<SyntheticOutputTrait>() -> OutputsTestModule
+                        else -> ModelsTestModule
+                    }
 
                 else -> ModelsTestModule
             }
@@ -88,7 +96,11 @@ private object CodegenCoreTestModules {
             eventStream: UnionShape,
         ): RustModule.LeafModule = ErrorsTestModule
 
-        override fun moduleForBuilder(context: ModuleProviderContext, shape: Shape, symbol: Symbol): RustModule.LeafModule {
+        override fun moduleForBuilder(
+            context: ModuleProviderContext,
+            shape: Shape,
+            symbol: Symbol,
+        ): RustModule.LeafModule {
             val builderNamespace = RustReservedWords.escapeIfNeeded("test_" + symbol.name.toSnakeCase())
             return RustModule.new(
                 builderNamespace,
@@ -100,12 +112,13 @@ private object CodegenCoreTestModules {
     }
 }
 
-val TestRustSymbolProviderConfig = RustSymbolProviderConfig(
-    runtimeConfig = TestRuntimeConfig,
-    renameExceptions = true,
-    nullabilityCheckMode = NullableIndex.CheckMode.CLIENT_ZERO_VALUE_V1,
-    moduleProvider = CodegenCoreTestModules.TestModuleProvider,
-)
+fun testRustSymbolProviderConfig(nullabilityCheckMode: NullableIndex.CheckMode) =
+    RustSymbolProviderConfig(
+        runtimeConfig = TestRuntimeConfig,
+        renameExceptions = true,
+        nullabilityCheckMode = nullabilityCheckMode,
+        moduleProvider = CodegenCoreTestModules.TestModuleProvider,
+    )
 
 fun testRustSettings(
     service: ShapeId = ShapeId.from("notrelevant#notrelevant"),
@@ -131,10 +144,35 @@ fun testRustSettings(
     examplesUri,
 )
 
-private const val SmithyVersion = "1.0"
-fun String.asSmithyModel(sourceLocation: String? = null, smithyVersion: String = SmithyVersion): Model {
+private const val SMITHY_VERSION = "1.0"
+
+fun String.asSmithyModel(
+    sourceLocation: String? = null,
+    smithyVersion: String = SMITHY_VERSION,
+    disableValidation: Boolean = false,
+): Model {
     val processed = letIf(!this.trimStart().startsWith("\$version")) { "\$version: ${smithyVersion.dq()}\n$it" }
-    return Model.assembler().discoverModels().addUnparsedModel(sourceLocation ?: "test.smithy", processed).assemble()
+    val denyModelsContaining =
+        arrayOf(
+            // If Smithy protocol test models are in our classpath, don't load them, since they are fairly large and we
+            // almost never need them.
+            "smithy-protocol-tests",
+        )
+    val urls =
+        ModelDiscovery.findModels().filter { modelUrl ->
+            denyModelsContaining.none {
+                modelUrl.toString().contains(it)
+            }
+        }
+    val assembler = Model.assembler()
+    for (url in urls) {
+        assembler.addImport(url)
+    }
+    assembler.addUnparsedModel(sourceLocation ?: "test.smithy", processed)
+    if (disableValidation) {
+        assembler.disableValidation()
+    }
+    return assembler.assemble()
         .unwrap()
 }
 
@@ -142,18 +180,20 @@ fun String.asSmithyModel(sourceLocation: String? = null, smithyVersion: String =
 internal fun testSymbolProvider(
     model: Model,
     rustReservedWordConfig: RustReservedWordConfig? = null,
-): RustSymbolProvider = SymbolVisitor(
-    testRustSettings(),
-    model,
-    ServiceShape.builder().version("test").id("test#Service").build(),
-    TestRustSymbolProviderConfig,
-).let { BaseSymbolMetadataProvider(it, additionalAttributes = listOf(Attribute.NonExhaustive)) }
-    .let {
-        RustReservedWordSymbolProvider(
-            it,
-            rustReservedWordConfig ?: RustReservedWordConfig(emptyMap(), emptyMap(), emptyMap()),
-        )
-    }
+    nullabilityCheckMode: NullableIndex.CheckMode = NullableIndex.CheckMode.CLIENT,
+): RustSymbolProvider =
+    SymbolVisitor(
+        testRustSettings(),
+        model,
+        ServiceShape.builder().version("test").id("test#Service").build(),
+        testRustSymbolProviderConfig(nullabilityCheckMode),
+    ).let { BaseSymbolMetadataProvider(it, additionalAttributes = listOf(Attribute.NonExhaustive)) }
+        .let {
+            RustReservedWordSymbolProvider(
+                it,
+                rustReservedWordConfig ?: RustReservedWordConfig(emptyMap(), emptyMap(), emptyMap()),
+            )
+        }
 
 // Intentionally only visible to codegen-core since the other modules have their own contexts
 internal fun testCodegenContext(
@@ -161,17 +201,23 @@ internal fun testCodegenContext(
     serviceShape: ServiceShape? = null,
     settings: CoreRustSettings = testRustSettings(),
     codegenTarget: CodegenTarget = CodegenTarget.CLIENT,
-): CodegenContext = CodegenContext(
-    model,
-    testSymbolProvider(model),
-    TestModuleDocProvider,
-    serviceShape
-        ?: model.serviceShapes.firstOrNull()
-        ?: ServiceShape.builder().version("test").id("test#Service").build(),
-    ShapeId.from("test#Protocol"),
-    settings,
-    codegenTarget,
-)
+    nullabilityCheckMode: NullableIndex.CheckMode = NullableIndex.CheckMode.CLIENT,
+): CodegenContext =
+    object : CodegenContext(
+        model,
+        testSymbolProvider(model, nullabilityCheckMode = nullabilityCheckMode),
+        TestModuleDocProvider,
+        serviceShape
+            ?: model.serviceShapes.firstOrNull()
+            ?: ServiceShape.builder().version("test").id("test#Service").build(),
+        ShapeId.from("test#Protocol"),
+        settings,
+        codegenTarget,
+    ) {
+        override fun builderInstantiator(): BuilderInstantiator {
+            return DefaultBuilderInstantiator(codegenTarget == CodegenTarget.CLIENT, symbolProvider)
+        }
+    }
 
 /**
  * In tests, we frequently need to generate a struct, a builder, and an impl block to access said builder.
@@ -183,12 +229,22 @@ fun StructureShape.renderWithModelBuilder(
 ) {
     val struct = this
     rustCrate.withModule(symbolProvider.moduleForShape(struct)) {
-        StructureGenerator(model, symbolProvider, this, struct, emptyList()).render()
+        StructureGenerator(model, symbolProvider, this, struct, emptyList(), StructSettings(true)).render()
         implBlock(symbolProvider.toSymbol(struct)) {
             BuilderGenerator.renderConvenienceMethod(this, symbolProvider, struct)
         }
     }
     rustCrate.withModule(symbolProvider.moduleForBuilder(struct)) {
         BuilderGenerator(model, symbolProvider, struct, emptyList()).render(this)
+    }
+}
+
+fun RustCrate.unitTest(
+    name: String? = null,
+    test: Writable,
+) {
+    lib {
+        val testName = name ?: safeName("test")
+        unitTest(testName, block = test)
     }
 }
